@@ -4,6 +4,7 @@
 /doc/
 /.elixir_ls/
 /erl_crash.dump
+/priv/plts/
 /.env
 /.env.*
 !.env.example

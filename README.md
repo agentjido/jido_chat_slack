@@ -52,13 +52,44 @@ You can pass `:token` and `:signing_secret` per call, or configure globally:
 ```elixir
 config :jido_chat_slack, :slack_bot_token, System.get_env("SLACK_BOT_TOKEN")
 config :jido_chat_slack, :slack_signing_secret, System.get_env("SLACK_SIGNING_SECRET")
+config :jido_chat_slack, :slack_app_token, System.get_env("SLACK_APP_TOKEN")
 ```
 
 ## Ingress Modes (`listener_child_specs/2`)
 
-`Jido.Chat.Slack.Adapter.listener_child_specs/2` currently supports:
+`Jido.Chat.Slack.Adapter.listener_child_specs/2` supports:
 
 - `ingress.mode = "webhook"`: no listener workers (`{:ok, []}`), host HTTP handles
   Events API, Interactivity, and Slash Command ingress.
+- `ingress.mode = "socket_mode"`: starts `SocketModeWorker`, opens Slack
+  Socket Mode using an app-level token (`xapp-...`), acks envelopes, and emits
+  payloads through `sink_mfa`.
 
-Socket Mode is intentionally not implemented in this package yet.
+Slack history fetches currently support backward pagination only. Passing
+`direction: :forward` returns `{:error, :unsupported_direction}` instead of
+silently ignoring the option.
+
+For interaction responses, you can either:
+
+- set `chat.metadata[:slack_response]` inside a slash/action/modal handler when
+  using webhook ingress, or
+- provide `response_builder` / `slack_response_builder` in webhook opts or
+  Socket Mode ingress settings to build inline Slack response payloads.
+
+Example:
+
+```elixir
+Jido.Chat.Slack.Adapter.listener_child_specs("bridge_slack",
+  ingress: %{
+    mode: "socket_mode",
+    app_token: System.fetch_env!("SLACK_APP_TOKEN"),
+    response_builder: fn %{sink_result: sink_result} ->
+      case sink_result do
+        {:reply, payload} -> payload
+        _ -> nil
+      end
+    end
+  },
+  sink_mfa: {Jido.Messaging.IngressSink, :emit, [MyApp.Messaging, "bridge_slack"]}
+)
+```

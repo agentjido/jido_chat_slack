@@ -1,6 +1,7 @@
 defmodule Jido.Chat.Slack.Adapter do
   @moduledoc """
-  Slack `Jido.Chat.Adapter` implementation using Slack Web API + webhook ingress.
+  Slack `Jido.Chat.Adapter` implementation using Slack Web API with webhook or
+  Socket Mode ingress.
   """
 
   use Jido.Chat.Adapter
@@ -25,9 +26,11 @@ defmodule Jido.Chat.Slack.Adapter do
     EditOptions,
     EphemeralOptions,
     FetchOptions,
+    InteractionResponse,
     MetadataOptions,
     ModalOptions,
     ReactionOptions,
+    SocketModeWorker,
     SendOptions
   }
 
@@ -68,12 +71,27 @@ defmodule Jido.Chat.Slack.Adapter do
     }
 
   @impl true
-  def listener_child_specs(_bridge_id, opts \\ []) when is_list(opts) do
+  def listener_child_specs(bridge_id, opts \\ [])
+      when is_binary(bridge_id) and is_list(opts) do
     ingress = normalize_ingress_opts(opts)
 
     case ingress_mode(ingress) do
-      :webhook -> {:ok, []}
-      :invalid -> {:error, :invalid_ingress_mode}
+      :webhook ->
+        {:ok, []}
+
+      :socket_mode ->
+        with {:ok, sink_mfa} <- validate_sink_mfa(Keyword.get(opts, :sink_mfa)) do
+          {:ok,
+           [
+             Supervisor.child_spec(
+               {SocketModeWorker, socket_mode_worker_opts(bridge_id, ingress, opts, sink_mfa)},
+               id: {:slack_socket_mode_worker, bridge_id}
+             )
+           ]}
+        end
+
+      :invalid ->
+        {:error, :invalid_ingress_mode}
     end
   end
 
@@ -392,7 +410,8 @@ defmodule Jido.Chat.Slack.Adapter do
       |> maybe_put_thread_ts()
       |> FetchOptions.new()
 
-    with {:ok, result} <-
+    with :ok <- validate_history_direction(opts.direction),
+         {:ok, result} <-
            transport(opts).fetch_messages(channel_id, FetchOptions.transport_opts(opts)) do
       thread_ts = opts.thread_ts
 
@@ -425,8 +444,11 @@ defmodule Jido.Chat.Slack.Adapter do
     fetch_opts =
       opts
       |> pick_opts([:token, :transport, :req, :cursor, :limit, :direction])
+      |> FetchOptions.new()
 
-    with {:ok, result} <- transport(fetch_opts).list_threads(channel_id, fetch_opts) do
+    with :ok <- validate_history_direction(fetch_opts.direction),
+         {:ok, result} <-
+           transport(fetch_opts).list_threads(channel_id, FetchOptions.transport_opts(fetch_opts)) do
       threads =
         result
         |> map_get([:threads, "threads"])
@@ -484,12 +506,18 @@ defmodule Jido.Chat.Slack.Adapter do
     end
   end
 
-  def format_webhook_response({:ok, _chat, _event}, _opts) do
-    WebhookResponse.new(%{
-      status: 200,
-      headers: %{"content-type" => "text/plain"},
-      body: ""
-    })
+  def format_webhook_response({:ok, _chat, _event} = result, opts) do
+    case InteractionResponse.webhook_response(result, opts) do
+      %WebhookResponse{} = response ->
+        response
+
+      nil ->
+        WebhookResponse.new(%{
+          status: 200,
+          headers: %{"content-type" => "text/plain"},
+          body: ""
+        })
+    end
   end
 
   def format_webhook_response({:error, reason}, _opts)
@@ -539,8 +567,6 @@ defmodule Jido.Chat.Slack.Adapter do
       {:ok, updated_chat, incoming}
     end
   end
-
-  defp route_parsed_event(_chat, _other, _opts, _request), do: {:error, :unsupported_event_type}
 
   defp incoming_from_event(%EventEnvelope{event_type: :message, payload: %Incoming{} = incoming}),
     do: {:ok, incoming}
@@ -1180,9 +1206,12 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp conversation_is_dm?(metadata, channel_id) do
     map_get(metadata, [:is_im, "is_im"]) ||
-      map_get(metadata, [:is_mpim, "is_mpim"]) ||
       infer_chat_type_from_channel_id(stringify(channel_id)) == :dm
   end
+
+  defp validate_history_direction(:backward), do: :ok
+  defp validate_history_direction(nil), do: :ok
+  defp validate_history_direction(_direction), do: {:error, :unsupported_direction}
 
   defp author_from_user_payload(payload) when is_map(payload) do
     %{
@@ -1369,9 +1398,59 @@ defmodule Jido.Chat.Slack.Adapter do
       nil -> :webhook
       :webhook -> :webhook
       "webhook" -> :webhook
+      :socket_mode -> :socket_mode
+      "socket_mode" -> :socket_mode
       _ -> :invalid
     end
   end
+
+  defp validate_sink_mfa({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args),
+       do: {:ok, {module, function, args}}
+
+  defp validate_sink_mfa(_), do: {:error, :invalid_sink_mfa}
+
+  defp socket_mode_worker_opts(bridge_id, ingress, opts, sink_mfa) do
+    bridge_config = Keyword.get(opts, :bridge_config)
+    credentials = bridge_credentials(bridge_config)
+
+    [
+      bridge_id: bridge_id,
+      sink_mfa: sink_mfa,
+      sink_opts: [bridge_id: bridge_id],
+      app_token:
+        map_get(ingress, [:app_token, "app_token"]) ||
+          map_get(ingress, [:socket_mode_app_token, "socket_mode_app_token"]) ||
+          map_get(credentials, [:app_token, "app_token"]) ||
+          map_get(credentials, [:socket_mode_app_token, "socket_mode_app_token"]),
+      open_client:
+        map_get(ingress, [:open_client, "open_client"]) || Jido.Chat.Slack.SocketMode.ReqClient,
+      open_client_opts:
+        normalize_keyword_opts(
+          map_get(ingress, [:open_client_opts, "open_client_opts"]) ||
+            map_get(ingress, [:transport_opts, "transport_opts"])
+        ),
+      socket_client:
+        map_get(ingress, [:socket_client, "socket_client"]) ||
+          Jido.Chat.Slack.SocketMode.WebSockexClient,
+      socket_client_opts:
+        normalize_keyword_opts(map_get(ingress, [:socket_client_opts, "socket_client_opts"])),
+      response_builder:
+        map_get(ingress, [:response_builder, "response_builder"]) ||
+          map_get(ingress, [:slack_response_builder, "slack_response_builder"]),
+      reconnect_interval_ms:
+        map_get(ingress, [:reconnect_interval_ms, "reconnect_interval_ms"]) || 250,
+      max_backoff_ms: map_get(ingress, [:max_backoff_ms, "max_backoff_ms"]) || 5_000,
+      path_prefix: map_get(ingress, [:path_prefix, "path_prefix"]) || "/socket_mode"
+    ]
+  end
+
+  defp normalize_keyword_opts(value) when is_list(value), do: value
+  defp normalize_keyword_opts(value) when is_map(value), do: Enum.into(value, [])
+  defp normalize_keyword_opts(_value), do: []
+
+  defp bridge_credentials(%{credentials: credentials}) when is_map(credentials), do: credentials
+  defp bridge_credentials(_), do: %{}
 
   defp normalize_struct(%_{} = struct), do: struct |> Map.from_struct() |> normalize_struct()
 

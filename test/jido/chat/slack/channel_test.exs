@@ -261,6 +261,14 @@ defmodule Jido.Chat.Slack.ChannelTest do
     assert length(threads.threads) == 1
   end
 
+  test "history helpers fail explicitly for unsupported forward direction" do
+    assert {:error, :unsupported_direction} =
+             Channel.fetch_messages("C123", transport: MockTransport, direction: :forward)
+
+    assert {:error, :unsupported_direction} =
+             Channel.list_threads("C123", transport: MockTransport, direction: :forward)
+  end
+
   test "open_modal/3 requires trigger_id and normalizes result" do
     assert {:ok, result} =
              Channel.open_modal(
@@ -391,6 +399,34 @@ defmodule Jido.Chat.Slack.ChannelTest do
       )
 
     assert response.body == "hello-challenge"
+  end
+
+  test "webhook pipeline uses chat metadata slack_response for interaction replies" do
+    chat =
+      Chat.new(adapters: %{slack: Jido.Chat.Slack.Adapter})
+      |> Chat.on_slash_command(fn chat, _event ->
+        %{chat | metadata: Map.put(chat.metadata, :slack_response, %{"text" => "ack"})}
+      end)
+
+    assert {:ok, _chat, _event, response} =
+             Jido.Chat.WebhookPipeline.handle_request(
+               chat,
+               :slack,
+               %{
+                 "command" => "/help",
+                 "text" => "topic",
+                 "channel_id" => "C123",
+                 "user_id" => "U123",
+                 "user_name" => "alice",
+                 "trigger_id" => "1337.42"
+               },
+               [],
+               &Jido.Chat.get_adapter/2,
+               &Jido.Chat.process_event/4
+             )
+
+    assert response.status == 200
+    assert response.body == %{"text" => "ack"}
   end
 
   test "handle_webhook/3 fails closed when signature verification fails" do
