@@ -7,6 +7,11 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   alias Jido.Chat.PostPayload
   alias Jido.Chat.Slack.Adapter
 
+  setup_all do
+    Code.ensure_loaded!(Adapter)
+    :ok
+  end
+
   defmodule MockTransport do
     @behaviour Jido.Chat.Slack.Transport
 
