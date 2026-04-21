@@ -23,12 +23,16 @@ defmodule Jido.Chat.Slack.EphemeralOptions do
   @enforce_keys Zoi.Struct.enforce_keys(@schema)
   defstruct Zoi.Struct.struct_fields(@schema)
 
+  @doc "Returns the Zoi schema for ephemeral message options."
   def schema, do: @schema
 
+  @doc "Builds ephemeral message options from a struct, keyword list, or map."
+  @spec new(t() | keyword() | map()) :: t()
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
   def new(opts) when is_map(opts), do: Jido.Chat.Schema.parse!(__MODULE__, @schema, opts)
 
+  @doc "Builds Slack API payload options for ephemeral posts."
   @spec payload_opts(t()) :: map()
   def payload_opts(%__MODULE__{} = opts) do
     %{}
@@ -37,6 +41,7 @@ defmodule Jido.Chat.Slack.EphemeralOptions do
     |> maybe_put("thread_ts", opts.thread_ts && to_string(opts.thread_ts))
   end
 
+  @doc "Extracts transport options for Slack ephemeral calls."
   @spec transport_opts(t()) :: keyword()
   def transport_opts(%__MODULE__{} = opts) do
     []

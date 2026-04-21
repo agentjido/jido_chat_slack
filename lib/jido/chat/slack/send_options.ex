@@ -29,8 +29,11 @@ defmodule Jido.Chat.Slack.SendOptions do
   @enforce_keys Zoi.Struct.enforce_keys(@schema)
   defstruct Zoi.Struct.struct_fields(@schema)
 
+  @doc "Returns the Zoi schema for send options."
   def schema, do: @schema
 
+  @doc "Builds send options from a struct, keyword list, or map."
+  @spec new(t() | keyword() | map()) :: t()
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
 
@@ -40,6 +43,7 @@ defmodule Jido.Chat.Slack.SendOptions do
     |> then(&Jido.Chat.Schema.parse!(__MODULE__, @schema, &1))
   end
 
+  @doc "Builds Slack API payload options for message sends."
   @spec payload_opts(t()) :: map()
   def payload_opts(%__MODULE__{} = opts) do
     %{}
@@ -54,6 +58,7 @@ defmodule Jido.Chat.Slack.SendOptions do
     |> maybe_put("icon_url", opts.icon_url)
   end
 
+  @doc "Extracts transport options for Slack send calls."
   @spec transport_opts(t()) :: keyword()
   def transport_opts(%__MODULE__{} = opts) do
     []

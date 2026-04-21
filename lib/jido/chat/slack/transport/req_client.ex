@@ -14,9 +14,7 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
     payload =
       %{"channel" => stringify(channel_id), "text" => text}
       |> Map.merge(keyword_payload(opts, [:blocks, :attachments, :thread_ts, :reply_broadcast]))
-      |> Map.merge(
-        keyword_payload(opts, [:unfurl_links, :unfurl_media, :username, :icon_emoji, :icon_url])
-      )
+      |> Map.merge(keyword_payload(opts, [:unfurl_links, :unfurl_media, :username, :icon_emoji, :icon_url]))
 
     api_post("chat.postMessage", payload, opts)
   end

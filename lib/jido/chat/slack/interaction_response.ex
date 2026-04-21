@@ -1,8 +1,11 @@
 defmodule Jido.Chat.Slack.InteractionResponse do
-  @moduledoc false
+  @moduledoc """
+  Normalizes Slack webhook responses and Socket Mode acknowledgements.
+  """
 
   alias Jido.Chat.{EventEnvelope, WebhookResponse}
 
+  @doc "Builds an optional webhook response from adapter or runtime results."
   @spec webhook_response(term(), keyword()) :: WebhookResponse.t() | nil
   def webhook_response(result, opts \\ []) when is_list(opts) do
     context = %{
@@ -28,6 +31,7 @@ defmodule Jido.Chat.Slack.InteractionResponse do
     end
   end
 
+  @doc "Builds the Socket Mode acknowledgement payload for a Slack envelope."
   @spec socket_ack_payload(map(), term(), keyword()) :: map()
   def socket_ack_payload(envelope, sink_result, opts \\ [])
       when is_map(envelope) and is_list(opts) do

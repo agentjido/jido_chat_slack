@@ -5,6 +5,17 @@
 /.elixir_ls/
 /erl_crash.dump
 /priv/plts/
+*.plt
+*.plt.hash
 /.env
 /.env.*
 !.env.example
+
+# Editor/IDE
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

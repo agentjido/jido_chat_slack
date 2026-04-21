@@ -151,8 +151,7 @@ defmodule Jido.Chat.Slack.Adapter do
            }
          },
          raw: normalize_struct(message_payload),
-         metadata:
-           Map.merge(metadata.extra, %{subtype: map_get(message_payload, [:subtype, "subtype"])})
+         metadata: Map.merge(metadata.extra, %{subtype: map_get(message_payload, [:subtype, "subtype"])})
        })}
     end
   end
@@ -1020,8 +1019,7 @@ defmodule Jido.Chat.Slack.Adapter do
         with message when is_map(message) <- unwrap_message_event(payload) do
           {:ok, message,
            %{
-             was_mentioned:
-               normalize_event_type(map_get(payload, [:type, "type"])) == :app_mention,
+             was_mentioned: normalize_event_type(map_get(payload, [:type, "type"])) == :app_mention,
              extra: %{}
            }}
         else
@@ -1185,7 +1183,7 @@ defmodule Jido.Chat.Slack.Adapter do
   end
 
   defp upload_initial_comment(raw_opts, %FileUpload{} = upload) do
-    metadata = upload.metadata || %{}
+    metadata = upload.metadata
 
     Keyword.get(raw_opts, :initial_comment) ||
       Keyword.get(raw_opts, :caption) ||
@@ -1351,7 +1349,6 @@ defmodule Jido.Chat.Slack.Adapter do
   end
 
   defp validate_history_direction(:backward), do: :ok
-  defp validate_history_direction(nil), do: :ok
   defp validate_history_direction(_direction), do: {:error, :unsupported_direction}
 
   defp author_from_user_payload(payload) when is_map(payload) do
@@ -1564,8 +1561,7 @@ defmodule Jido.Chat.Slack.Adapter do
           map_get(ingress, [:socket_mode_app_token, "socket_mode_app_token"]) ||
           map_get(credentials, [:app_token, "app_token"]) ||
           map_get(credentials, [:socket_mode_app_token, "socket_mode_app_token"]),
-      open_client:
-        map_get(ingress, [:open_client, "open_client"]) || Jido.Chat.Slack.SocketMode.ReqClient,
+      open_client: map_get(ingress, [:open_client, "open_client"]) || Jido.Chat.Slack.SocketMode.ReqClient,
       open_client_opts:
         normalize_keyword_opts(
           map_get(ingress, [:open_client_opts, "open_client_opts"]) ||
@@ -1574,13 +1570,11 @@ defmodule Jido.Chat.Slack.Adapter do
       socket_client:
         map_get(ingress, [:socket_client, "socket_client"]) ||
           Jido.Chat.Slack.SocketMode.WebSockexClient,
-      socket_client_opts:
-        normalize_keyword_opts(map_get(ingress, [:socket_client_opts, "socket_client_opts"])),
+      socket_client_opts: normalize_keyword_opts(map_get(ingress, [:socket_client_opts, "socket_client_opts"])),
       response_builder:
         map_get(ingress, [:response_builder, "response_builder"]) ||
           map_get(ingress, [:slack_response_builder, "slack_response_builder"]),
-      reconnect_interval_ms:
-        map_get(ingress, [:reconnect_interval_ms, "reconnect_interval_ms"]) || 250,
+      reconnect_interval_ms: map_get(ingress, [:reconnect_interval_ms, "reconnect_interval_ms"]) || 250,
       max_backoff_ms: map_get(ingress, [:max_backoff_ms, "max_backoff_ms"]) || 5_000,
       path_prefix: map_get(ingress, [:path_prefix, "path_prefix"]) || "/socket_mode"
     ]

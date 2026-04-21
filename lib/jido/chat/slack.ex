@@ -7,6 +7,7 @@ defmodule Jido.Chat.Slack do
 
   alias Jido.Chat.Slack.Adapter
 
+  @doc "Returns the canonical Slack adapter module."
   @spec adapter() :: module()
   def adapter, do: Adapter
 end

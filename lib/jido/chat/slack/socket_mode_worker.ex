@@ -33,6 +33,7 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
           reconnect_timer_ref: reference() | nil
         }
 
+  @doc "Starts a Slack Socket Mode worker."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -216,8 +217,7 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
         socket_envelope: envelope,
         socket_envelope_id: map_get(envelope, [:envelope_id, "envelope_id"]),
         socket_envelope_type: map_get(envelope, [:type, "type"]),
-        accepts_response_payload:
-          map_get(envelope, [:accepts_response_payload, "accepts_response_payload"]) == true
+        accepts_response_payload: map_get(envelope, [:accepts_response_payload, "accepts_response_payload"]) == true
       }
     )
   end
