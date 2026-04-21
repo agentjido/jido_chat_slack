@@ -20,8 +20,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
   end
 
   if @run_live and (is_nil(@token) or @token == "" or is_nil(@channel_id) or @channel_id == "") do
-    @moduletag skip:
-                 "set SLACK_BOT_TOKEN and SLACK_TEST_CHANNEL_ID when RUN_LIVE_SLACK_TESTS=true"
+    @moduletag skip: "set SLACK_BOT_TOKEN and SLACK_TEST_CHANNEL_ID when RUN_LIVE_SLACK_TESTS=true"
   end
 
   setup_all do

@@ -7,6 +7,11 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   alias Jido.Chat.PostPayload
   alias Jido.Chat.Slack.Adapter
 
+  setup_all do
+    Code.ensure_loaded!(Adapter)
+    :ok
+  end
+
   defmodule MockTransport do
     @behaviour Jido.Chat.Slack.Transport
 
@@ -296,9 +301,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     assert result.message_id == "1706745600.000100"
 
     assert {:ok, edited} =
-             Adapter.edit_message("C123", "1706745600.000100", "updated",
-               transport: MockTransport
-             )
+             Adapter.edit_message("C123", "1706745600.000100", "updated", transport: MockTransport)
 
     assert_received {:edit_message, "C123", "1706745600.000100", "updated"}
     assert edited.message_id == "1706745600.000100"
@@ -422,9 +425,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     assert_received {:add_reaction, "C123", "1706745600.000100", ":wave:"}
 
     assert :ok =
-             Adapter.remove_reaction("C123", "1706745600.000100", ":wave:",
-               transport: MockTransport
-             )
+             Adapter.remove_reaction("C123", "1706745600.000100", ":wave:", transport: MockTransport)
 
     assert_received {:remove_reaction, "C123", "1706745600.000100", ":wave:"}
 
@@ -445,9 +446,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
 
   test "fetch_message/3 preserves channel id when Slack omits it from the payload" do
     assert {:ok, message} =
-             Adapter.fetch_message("C123", "1706745600.000100",
-               transport: ChannelOmittingTransport
-             )
+             Adapter.fetch_message("C123", "1706745600.000100", transport: ChannelOmittingTransport)
 
     assert_received {:fetch_message_without_channel, "C123", "1706745600.000100"}
     assert message.external_room_id == "C123"

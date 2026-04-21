@@ -25,12 +25,16 @@ defmodule Jido.Chat.Slack.FetchOptions do
   @enforce_keys Zoi.Struct.enforce_keys(@schema)
   defstruct Zoi.Struct.struct_fields(@schema)
 
+  @doc "Returns the Zoi schema for fetch options."
   def schema, do: @schema
 
+  @doc "Builds fetch options from a struct, keyword list, or map."
+  @spec new(t() | keyword() | map()) :: t()
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
   def new(opts) when is_map(opts), do: Jido.Chat.Schema.parse!(__MODULE__, @schema, opts)
 
+  @doc "Extracts transport options for Slack history calls."
   @spec transport_opts(t()) :: keyword()
   def transport_opts(%__MODULE__{} = opts) do
     []

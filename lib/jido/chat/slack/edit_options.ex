@@ -22,12 +22,16 @@ defmodule Jido.Chat.Slack.EditOptions do
   @enforce_keys Zoi.Struct.enforce_keys(@schema)
   defstruct Zoi.Struct.struct_fields(@schema)
 
+  @doc "Returns the Zoi schema for edit options."
   def schema, do: @schema
 
+  @doc "Builds edit options from a struct, keyword list, or map."
+  @spec new(t() | keyword() | map()) :: t()
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
   def new(opts) when is_map(opts), do: Jido.Chat.Schema.parse!(__MODULE__, @schema, opts)
 
+  @doc "Builds Slack API payload options for message edits."
   @spec payload_opts(t()) :: map()
   def payload_opts(%__MODULE__{} = opts) do
     %{}
@@ -35,6 +39,7 @@ defmodule Jido.Chat.Slack.EditOptions do
     |> maybe_put("attachments", opts.attachments)
   end
 
+  @doc "Extracts transport options for Slack edit calls."
   @spec transport_opts(t()) :: keyword()
   def transport_opts(%__MODULE__{} = opts) do
     []
