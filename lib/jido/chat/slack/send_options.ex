@@ -33,7 +33,12 @@ defmodule Jido.Chat.Slack.SendOptions do
 
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
-  def new(opts) when is_map(opts), do: Jido.Chat.Schema.parse!(__MODULE__, @schema, opts)
+
+  def new(opts) when is_map(opts) do
+    opts
+    |> normalize_generic_thread_ts()
+    |> then(&Jido.Chat.Schema.parse!(__MODULE__, @schema, &1))
+  end
 
   @spec payload_opts(t()) :: map()
   def payload_opts(%__MODULE__{} = opts) do
@@ -61,4 +66,16 @@ defmodule Jido.Chat.Slack.SendOptions do
 
   defp maybe_kw(keyword, _key, nil), do: keyword
   defp maybe_kw(keyword, key, value), do: Keyword.put(keyword, key, value)
+
+  defp normalize_generic_thread_ts(opts) do
+    thread_ts =
+      Map.get(opts, :thread_ts) ||
+        Map.get(opts, "thread_ts") ||
+        Map.get(opts, :external_thread_id) ||
+        Map.get(opts, "external_thread_id") ||
+        Map.get(opts, :reply_to_id) ||
+        Map.get(opts, "reply_to_id")
+
+    if is_nil(thread_ts), do: opts, else: Map.put(opts, :thread_ts, thread_ts)
+  end
 end

@@ -11,9 +11,6 @@ It is part of the Elixir implementation aligned to the Vercel Chat SDK
 `Jido.Chat.Slack.Adapter` is the canonical adapter module and uses Slack's
 HTTP APIs via `Req`.
 
-`Jido.Chat.Slack.Channel` is kept as a compatibility wrapper for legacy
-`Jido.Chat.Channel` integrations.
-
 ## Installation
 
 ```elixir
@@ -54,6 +51,37 @@ config :jido_chat_slack, :slack_bot_token, System.get_env("SLACK_BOT_TOKEN")
 config :jido_chat_slack, :slack_signing_secret, System.get_env("SLACK_SIGNING_SECRET")
 config :jido_chat_slack, :slack_app_token, System.get_env("SLACK_APP_TOKEN")
 ```
+
+## Live Integration Test
+
+There is a live test module at:
+
+- `test/jido/chat/slack/live_integration_test.exs`
+
+It is excluded by default. To run it:
+
+1. Copy and fill a local env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Run:
+
+```bash
+mix test test/jido/chat/slack/live_integration_test.exs --include live
+```
+
+Current live coverage includes:
+
+- send, fetch, edit, and delete
+- metadata lookup
+- stream fallback through core `Jido.Chat.Adapter.stream/4`
+- reply continuity through Slack thread routing
+- reaction add and remove
+- local path upload and raw byte upload through `send_file/3`
+- canonical single-file post through core `post_message/4`
+- optional DM open and ephemeral post when `SLACK_TEST_USER_ID` is set
 
 ## Ingress Modes (`listener_child_specs/2`)
 

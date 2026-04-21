@@ -11,6 +11,12 @@ defmodule Jido.Chat.Slack.Transport do
               opts :: keyword()
             ) :: api_result()
 
+  @callback send_file(
+              channel_id :: String.t() | integer(),
+              upload :: Jido.Chat.FileUpload.t(),
+              opts :: keyword()
+            ) :: api_result()
+
   @callback edit_message(
               channel_id :: String.t() | integer(),
               message_id :: String.t() | integer(),

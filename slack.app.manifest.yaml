@@ -1,0 +1,60 @@
+# Development manifest for `jido_chat_slack`.
+#
+# Import this into Slack App settings using "Create New App" -> "From manifest",
+# or paste it into an existing app's manifest editor.
+#
+# Notes:
+# - This is scoped for local adapter development and live integration testing.
+# - Install the app to your workspace after import.
+# - Invite the bot to the test channel before running live tests.
+# - If you use Socket Mode, generate an app-level token with `connections:write`
+#   after the app is created; manifests do not embed token values.
+_metadata:
+  major_version: 1
+
+display_information:
+  name: Jido Chat Slack (Dev)
+  description: Development app for the jido_chat_slack adapter
+  background_color: "#2d7ff9"
+
+features:
+  bot_user:
+    display_name: Jido Chat Slack
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - files:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - mpim:read
+      - mpim:write
+      - reactions:write
+
+settings:
+  interactivity:
+    is_enabled: true
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - file_created
+      - file_shared
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+      - reaction_added
+      - reaction_removed
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  is_hosted: false
+  token_rotation_enabled: false

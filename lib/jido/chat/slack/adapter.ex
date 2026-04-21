@@ -10,11 +10,13 @@ defmodule Jido.Chat.Slack.Adapter do
     ChannelInfo,
     EphemeralMessage,
     EventEnvelope,
+    FileUpload,
     Incoming,
     Message,
     MessagePage,
     ModalResult,
     Response,
+    SlashCommandEvent,
     ThreadPage,
     ThreadSummary,
     WebhookRequest,
@@ -48,6 +50,7 @@ defmodule Jido.Chat.Slack.Adapter do
       initialize: :fallback,
       shutdown: :fallback,
       send_message: :native,
+      send_file: :native,
       edit_message: :native,
       delete_message: :native,
       start_typing: :unsupported,
@@ -61,6 +64,7 @@ defmodule Jido.Chat.Slack.Adapter do
       fetch_messages: :native,
       fetch_channel_messages: :native,
       list_threads: :native,
+      open_thread: :native,
       post_channel_message: :fallback,
       stream: :fallback,
       open_modal: :native,
@@ -177,6 +181,24 @@ defmodule Jido.Chat.Slack.Adapter do
   end
 
   @impl true
+  def send_file(channel_id, file, opts \\ []) do
+    upload = FileUpload.normalize(file)
+    raw_opts = opts
+    send_opts = SendOptions.new(opts)
+
+    with :ok <- validate_upload(upload),
+         {:ok, result} <-
+           transport(send_opts).send_file(
+             channel_id,
+             upload,
+             SendOptions.transport_opts(send_opts) ++
+               file_transport_opts(raw_opts, send_opts, upload)
+           ) do
+      {:ok, upload_response(channel_id, upload, result)}
+    end
+  end
+
+  @impl true
   def edit_message(channel_id, message_id, text, opts \\ []) do
     opts = EditOptions.new(opts)
 
@@ -286,7 +308,7 @@ defmodule Jido.Chat.Slack.Adapter do
 
     with {:ok, raw_message} <-
            transport(transport_opts).fetch_message(channel_id, message_id, transport_opts),
-         {:ok, incoming} <- transform_incoming(raw_message) do
+         {:ok, incoming} <- transform_incoming(ensure_channel_id(raw_message, channel_id)) do
       {:ok,
        Message.from_incoming(incoming,
          adapter_name: :slack,
@@ -299,6 +321,17 @@ defmodule Jido.Chat.Slack.Adapter do
   def open_dm(user_id, opts \\ []) do
     transport_opts = pick_opts(opts, [:token, :transport, :req])
     transport(transport_opts).open_dm(user_id, transport_opts)
+  end
+
+  @impl true
+  def open_thread(channel_id, message_id, opts \\ []) do
+    thread_ts = opts[:thread_ts] || opts[:external_thread_id] || message_id
+
+    {:ok,
+     %{
+       external_thread_id: stringify(thread_ts),
+       delivery_external_room_id: stringify(channel_id)
+     }}
   end
 
   @impl true
@@ -747,19 +780,22 @@ defmodule Jido.Chat.Slack.Adapter do
       thread_id: thread_id(channel_id, nil),
       channel_id: stringify(channel_id),
       message_id: stringify(map_get(payload, [:trigger_id, "trigger_id"])),
-      payload: %{
-        adapter_name: :slack,
-        channel_id: stringify(channel_id),
-        command: map_get(payload, [:command, "command"]),
-        text: map_get(payload, [:text, "text"]) || "",
-        trigger_id: map_get(payload, [:trigger_id, "trigger_id"]),
-        user: user,
-        raw: payload,
-        metadata: %{
-          response_url: map_get(payload, [:response_url, "response_url"]),
-          team_id: map_get(payload, [:team_id, "team_id"])
-        }
-      },
+      payload:
+        SlashCommandEvent.new(%{
+          adapter_name: :slack,
+          thread_id: thread_id(channel_id, nil),
+          channel_id: stringify(channel_id),
+          message_id: stringify(map_get(payload, [:trigger_id, "trigger_id"])),
+          command: map_get(payload, [:command, "command"]),
+          text: map_get(payload, [:text, "text"]) || "",
+          trigger_id: stringify(map_get(payload, [:trigger_id, "trigger_id"])),
+          user: user,
+          raw: payload,
+          metadata: %{
+            response_url: map_get(payload, [:response_url, "response_url"]),
+            team_id: map_get(payload, [:team_id, "team_id"])
+          }
+        }),
       raw: payload,
       metadata: %{}
     })
@@ -1114,6 +1150,111 @@ defmodule Jido.Chat.Slack.Adapter do
       end
     end)
   end
+
+  defp ensure_channel_id(%{} = raw_message, channel_id) do
+    if is_nil(map_get(raw_message, [:channel, "channel"])) do
+      Map.put(raw_message, :channel, stringify(channel_id))
+    else
+      raw_message
+    end
+  end
+
+  defp ensure_channel_id(raw_message, _channel_id), do: raw_message
+
+  defp validate_upload(%FileUpload{path: path}) when is_binary(path) and path != "", do: :ok
+
+  defp validate_upload(%FileUpload{data: data, filename: filename})
+       when is_binary(data) and data != "" and is_binary(filename) and filename != "" do
+    :ok
+  end
+
+  defp validate_upload(%FileUpload{data: data}) when is_binary(data) and data != "" do
+    {:error, :missing_filename}
+  end
+
+  defp validate_upload(%FileUpload{url: url}) when is_binary(url) and url != "" do
+    {:error, :unsupported_remote_url}
+  end
+
+  defp validate_upload(_upload), do: {:error, :missing_file_source}
+
+  defp file_transport_opts(raw_opts, %SendOptions{} = opts, %FileUpload{} = upload) do
+    []
+    |> maybe_put_kw(:thread_ts, opts.thread_ts)
+    |> maybe_put_kw(:initial_comment, upload_initial_comment(raw_opts, upload))
+  end
+
+  defp upload_initial_comment(raw_opts, %FileUpload{} = upload) do
+    metadata = upload.metadata || %{}
+
+    Keyword.get(raw_opts, :initial_comment) ||
+      Keyword.get(raw_opts, :caption) ||
+      Keyword.get(raw_opts, :text) ||
+      map_get(metadata, [:caption, "caption"]) ||
+      map_get(metadata, [:transcript, "transcript"])
+  end
+
+  defp upload_response(channel_id, %FileUpload{} = upload, result) do
+    file =
+      result
+      |> map_get([:files, "files"])
+      |> List.wrap()
+      |> List.first()
+      |> normalize_struct()
+
+    Response.new(%{
+      external_message_id: slack_file_share_ts(file, channel_id),
+      external_room_id: stringify(channel_id),
+      timestamp: slack_file_share_ts(file, channel_id),
+      channel_type: :slack,
+      status: :sent,
+      raw: result,
+      metadata:
+        %{
+          file_id: map_get(file, [:id, "id"]),
+          filename: map_get(file, [:name, "name"]),
+          size: map_get(file, [:size, "size"]),
+          url: map_get(file, [:url_private, "url_private"]),
+          content_type: map_get(file, [:mimetype, "mimetype"]),
+          upload_kind: upload.kind,
+          delivered_kind: slack_file_kind(file, upload.kind)
+        }
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new()
+    })
+  end
+
+  defp slack_file_share_ts(file, channel_id) when is_map(file) do
+    shares = map_get(file, [:shares, "shares"]) |> normalize_struct()
+    channel_id = stringify(channel_id)
+
+    [
+      maybe_get(shares, [:public, "public"]),
+      maybe_get(shares, [:private, "private"])
+    ]
+    |> Enum.find_value(fn share_group ->
+      share_group
+      |> normalize_struct()
+      |> Map.get(channel_id, [])
+      |> List.wrap()
+      |> List.first()
+      |> maybe_get([:ts, "ts"])
+    end)
+  end
+
+  defp slack_file_share_ts(_file, _channel_id), do: nil
+
+  defp slack_file_kind(file, fallback) do
+    case map_get(file, [:mimetype, "mimetype"]) do
+      <<"image/", _::binary>> -> :image
+      <<"audio/", _::binary>> -> :audio
+      <<"video/", _::binary>> -> :video
+      _ -> fallback
+    end
+  end
+
+  defp maybe_put_kw(keyword, _key, nil), do: keyword
+  defp maybe_put_kw(keyword, key, value), do: Keyword.put(keyword, key, value)
 
   defp normalize_thread_summary(channel_id, raw_thread) when is_map(raw_thread) do
     case transform_incoming(raw_thread) do

@@ -1,16 +1,43 @@
-defmodule Jido.Chat.Slack.ChannelTest do
+defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   use ExUnit.Case, async: true
 
   alias Jido.Chat
-  alias Jido.Chat.Slack.Channel
+  alias Jido.Chat.Adapter, as: ChatAdapter
+  alias Jido.Chat.FileUpload
+  alias Jido.Chat.PostPayload
+  alias Jido.Chat.Slack.Adapter
 
   defmodule MockTransport do
     @behaviour Jido.Chat.Slack.Transport
 
     @impl true
-    def send_message(channel_id, text, _opts) do
-      send(self(), {:send_message, channel_id, text})
+    def send_message(channel_id, text, opts) do
+      send(self(), {:send_message, channel_id, text, opts})
       {:ok, %{"channel" => channel_id, "ts" => "1706745600.000100"}}
+    end
+
+    @impl true
+    def send_file(channel_id, upload, opts) do
+      send(self(), {:send_file, channel_id, upload, opts})
+
+      {:ok,
+       %{
+         "ok" => true,
+         "files" => [
+           %{
+             "id" => "F123",
+             "name" => upload.filename,
+             "mimetype" => upload.media_type || "text/plain",
+             "size" => upload.size_bytes || 21,
+             "url_private" => "https://files.slack.com/files-pri/T1-F123/#{upload.filename}",
+             "shares" => %{
+               "public" => %{
+                 channel_id => [%{"ts" => "1706745609.000900"}]
+               }
+             }
+           }
+         ]
+       }}
     end
 
     @impl true
@@ -141,18 +168,81 @@ defmodule Jido.Chat.Slack.ChannelTest do
     end
   end
 
+  defmodule ChannelOmittingTransport do
+    @behaviour Jido.Chat.Slack.Transport
+
+    @impl true
+    def send_message(_channel_id, _text, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def send_file(_channel_id, _upload, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def edit_message(_channel_id, _message_id, _text, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def delete_message(_channel_id, _message_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def fetch_metadata(_channel_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def fetch_thread(_channel_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def fetch_message(channel_id, message_id, _opts) do
+      send(self(), {:fetch_message_without_channel, channel_id, message_id})
+
+      {:ok,
+       %{
+         "type" => "message",
+         "user" => "U123",
+         "text" => "single",
+         "ts" => message_id
+       }}
+    end
+
+    @impl true
+    def fetch_messages(_channel_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def fetch_channel_messages(_channel_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def list_threads(_channel_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def add_reaction(_channel_id, _message_id, _emoji, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def remove_reaction(_channel_id, _message_id, _emoji, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def post_ephemeral(_channel_id, _user_id, _text, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def open_dm(_user_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def open_modal(_trigger_id, _payload, _opts), do: {:error, :unsupported}
+  end
+
   test "channel metadata" do
-    assert Channel.channel_type() == :slack
-    assert :text in Channel.capabilities()
-    assert :threads in Channel.capabilities()
-    assert :slash_commands in Channel.capabilities()
-    refute :typing in Channel.capabilities()
+    caps = Adapter.capabilities()
+
+    assert Adapter.channel_type() == :slack
+    assert caps.send_message == :native
+    assert caps.send_file == :native
+    assert caps.edit_message == :native
+    assert caps.open_thread == :native
+    assert caps.start_typing == :unsupported
   end
 
   test "adapter capabilities matrix declares supported surfaces" do
     caps = Jido.Chat.Slack.Adapter.capabilities()
 
     assert caps.send_message == :native
+    assert caps.send_file == :native
     assert caps.edit_message == :native
     assert caps.start_typing == :unsupported
     assert caps.open_modal == :native
@@ -170,7 +260,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
       "ts" => "1706745600.000100"
     }
 
-    assert {:ok, incoming} = Channel.transform_incoming(message)
+    assert {:ok, incoming} = Adapter.transform_incoming(message)
     assert incoming.external_room_id == "C123"
     assert incoming.external_user_id == "U123"
     assert incoming.text == "Hello <@U999>"
@@ -196,58 +286,150 @@ defmodule Jido.Chat.Slack.ChannelTest do
       ]
     }
 
-    assert {:ok, incoming} = Channel.transform_incoming(message)
+    assert {:ok, incoming} = Adapter.transform_incoming(message)
     assert [%{kind: :image, url: "https://files.slack.com/image.png"}] = incoming.media
   end
 
   test "send/edit/delete/fetch metadata methods work" do
-    assert {:ok, result} = Channel.send_message("C123", "hi", transport: MockTransport)
-    assert_received {:send_message, "C123", "hi"}
+    assert {:ok, result} = Adapter.send_message("C123", "hi", transport: MockTransport)
+    assert_received {:send_message, "C123", "hi", []}
     assert result.message_id == "1706745600.000100"
 
     assert {:ok, edited} =
-             Channel.edit_message("C123", "1706745600.000100", "updated",
+             Adapter.edit_message("C123", "1706745600.000100", "updated",
                transport: MockTransport
              )
 
     assert_received {:edit_message, "C123", "1706745600.000100", "updated"}
     assert edited.message_id == "1706745600.000100"
 
-    assert :ok = Channel.delete_message("C123", "1706745600.000100", transport: MockTransport)
+    assert :ok = Adapter.delete_message("C123", "1706745600.000100", transport: MockTransport)
     assert_received {:delete_message, "C123", "1706745600.000100"}
 
-    assert {:ok, info} = Channel.fetch_metadata("C123", transport: MockTransport)
+    assert {:ok, info} = Adapter.fetch_metadata("C123", transport: MockTransport)
     assert_received {:fetch_metadata, "C123"}
     assert info.id == "C123"
     assert info.name == "general"
     assert info.member_count == 12
   end
 
+  test "send_message/3 maps generic thread routing to slack thread_ts" do
+    assert {:ok, _result} =
+             Adapter.send_message("C123", "hi",
+               transport: MockTransport,
+               external_thread_id: "1706745600.000100",
+               reply_to_id: "1706745599.000099"
+             )
+
+    assert_received {:send_message, "C123", "hi", opts}
+    assert Keyword.get(opts, :thread_ts) == "1706745600.000100"
+  end
+
+  test "send_file/3 uploads path-backed and in-memory files" do
+    path =
+      Path.join(System.tmp_dir!(), "jido-slack-upload-#{System.unique_integer([:positive])}.txt")
+
+    File.write!(path, "slack path upload\n")
+
+    on_exit(fn ->
+      File.rm(path)
+    end)
+
+    assert {:ok, path_result} =
+             Adapter.send_file(
+               "C123",
+               %FileUpload{
+                 kind: :file,
+                 path: path,
+                 filename: Path.basename(path)
+               },
+               transport: MockTransport,
+               caption: "path caption"
+             )
+
+    assert path_result.external_message_id == "1706745609.000900"
+    assert path_result.external_room_id == "C123"
+    assert path_result.metadata.file_id == "F123"
+    assert path_result.metadata.filename == Path.basename(path)
+    assert path_result.metadata.upload_kind == :file
+    assert path_result.metadata.delivered_kind == :file
+    assert_received {:send_file, "C123", upload, path_opts}
+    assert upload.path == path
+    assert Keyword.get(path_opts, :initial_comment) == "path caption"
+
+    assert {:ok, bytes_result} =
+             Adapter.send_file(
+               "C123",
+               %FileUpload{
+                 kind: :file,
+                 data: "slack bytes upload\n",
+                 filename: "bytes.txt",
+                 media_type: "text/plain"
+               },
+               transport: MockTransport,
+               external_thread_id: "1706745600.000100"
+             )
+
+    assert bytes_result.external_message_id == "1706745609.000900"
+    assert bytes_result.metadata.filename == "bytes.txt"
+    assert bytes_result.metadata.content_type == "text/plain"
+    assert_received {:send_file, "C123", upload, bytes_opts}
+    assert upload.data == "slack bytes upload\n"
+    assert Keyword.get(bytes_opts, :thread_ts) == "1706745600.000100"
+  end
+
+  test "send_file/3 returns explicit validation errors for unsupported or incomplete inputs" do
+    assert {:error, :missing_filename} =
+             Adapter.send_file(
+               "C123",
+               %FileUpload{kind: :file, data: "slack bytes upload\n"},
+               transport: MockTransport
+             )
+
+    assert {:error, :unsupported_remote_url} =
+             Adapter.send_file(
+               "C123",
+               %FileUpload{
+                 kind: :file,
+                 url: "https://example.com/file.txt",
+                 filename: "file.txt"
+               },
+               transport: MockTransport
+             )
+
+    assert {:error, :missing_file_source} =
+             Adapter.send_file(
+               "C123",
+               %FileUpload{kind: :file, filename: "missing.txt"},
+               transport: MockTransport
+             )
+  end
+
   test "open_dm, post_ephemeral, reactions, and history helpers" do
-    assert {:ok, "DU123"} = Channel.open_dm("U123", transport: MockTransport)
+    assert {:ok, "DU123"} = Adapter.open_dm("U123", transport: MockTransport)
     assert_received {:open_dm, "U123"}
 
     assert {:ok, ephemeral} =
-             Channel.post_ephemeral("C123", "U123", "secret", transport: MockTransport)
+             Adapter.post_ephemeral("C123", "U123", "secret", transport: MockTransport)
 
     assert_received {:post_ephemeral, "C123", "U123", "secret"}
     assert ephemeral.used_fallback == false
     assert ephemeral.thread_id == "slack:C123:1706745602.000300"
 
     assert :ok =
-             Channel.add_reaction("C123", "1706745600.000100", ":wave:", transport: MockTransport)
+             Adapter.add_reaction("C123", "1706745600.000100", ":wave:", transport: MockTransport)
 
     assert_received {:add_reaction, "C123", "1706745600.000100", ":wave:"}
 
     assert :ok =
-             Channel.remove_reaction("C123", "1706745600.000100", ":wave:",
+             Adapter.remove_reaction("C123", "1706745600.000100", ":wave:",
                transport: MockTransport
              )
 
     assert_received {:remove_reaction, "C123", "1706745600.000100", ":wave:"}
 
     assert {:ok, page} =
-             Channel.fetch_messages("C123",
+             Adapter.fetch_messages("C123",
                transport: MockTransport,
                thread_ts: "1706745600.000100"
              )
@@ -256,22 +438,58 @@ defmodule Jido.Chat.Slack.ChannelTest do
     assert length(page.messages) == 1
     assert page.next_cursor == "cursor-1"
 
-    assert {:ok, threads} = Channel.list_threads("C123", transport: MockTransport)
+    assert {:ok, threads} = Adapter.list_threads("C123", transport: MockTransport)
     assert_received {:list_threads, "C123"}
     assert length(threads.threads) == 1
   end
 
+  test "fetch_message/3 preserves channel id when Slack omits it from the payload" do
+    assert {:ok, message} =
+             Adapter.fetch_message("C123", "1706745600.000100",
+               transport: ChannelOmittingTransport
+             )
+
+    assert_received {:fetch_message_without_channel, "C123", "1706745600.000100"}
+    assert message.external_room_id == "C123"
+    assert message.channel_id == "C123"
+    assert message.external_message_id == "1706745600.000100"
+  end
+
+  test "core post_message/4 routes a single file through Slack send_file/3" do
+    payload =
+      PostPayload.new(%{
+        text: "slack canonical upload",
+        files: [
+          %{
+            kind: :file,
+            data: "slack canonical bytes\n",
+            filename: "canonical.txt",
+            media_type: "text/plain"
+          }
+        ]
+      })
+
+    assert {:ok, response} =
+             ChatAdapter.post_message(Adapter, "C123", payload, transport: MockTransport)
+
+    assert response.external_message_id == "1706745609.000900"
+    assert response.metadata.file_id == "F123"
+    assert_received {:send_file, "C123", upload, opts}
+    assert upload.filename == "canonical.txt"
+    assert Keyword.get(opts, :initial_comment) == "slack canonical upload"
+  end
+
   test "history helpers fail explicitly for unsupported forward direction" do
     assert {:error, :unsupported_direction} =
-             Channel.fetch_messages("C123", transport: MockTransport, direction: :forward)
+             Adapter.fetch_messages("C123", transport: MockTransport, direction: :forward)
 
     assert {:error, :unsupported_direction} =
-             Channel.list_threads("C123", transport: MockTransport, direction: :forward)
+             Adapter.list_threads("C123", transport: MockTransport, direction: :forward)
   end
 
   test "open_modal/3 requires trigger_id and normalizes result" do
     assert {:ok, result} =
-             Channel.open_modal(
+             Adapter.open_modal(
                "C123",
                %{
                  type: "modal",
@@ -292,7 +510,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
                      }}
 
     assert {:error, :missing_trigger_id} =
-             Channel.open_modal("C123", %{type: "modal", callback_id: "feedback"}, [])
+             Adapter.open_modal("C123", %{type: "modal", callback_id: "feedback"}, [])
   end
 
   test "handle_webhook/3 routes app_mention, slash, action, modal, and reaction events" do
@@ -316,7 +534,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
     }
 
     assert {:ok, _chat, %Jido.Chat.Incoming{} = incoming} =
-             Channel.handle_webhook(chat, mention_payload, [])
+             Adapter.handle_webhook(chat, mention_payload, [])
 
     assert incoming.external_message_id == "1706745600.000100"
     assert_received :mention_hit
@@ -330,7 +548,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
       "trigger_id" => "1337.42"
     }
 
-    assert {:ok, _chat, _incoming} = Channel.handle_webhook(chat, slash_payload, [])
+    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, slash_payload, [])
     assert_received :slash_hit
 
     action_payload =
@@ -345,7 +563,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
       })
 
     assert {:ok, _chat, _incoming} =
-             Channel.handle_webhook(chat, %{"payload" => action_payload}, [])
+             Adapter.handle_webhook(chat, %{"payload" => action_payload}, [])
 
     assert_received :action_hit
 
@@ -365,7 +583,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
       })
 
     assert {:ok, _chat, _incoming} =
-             Channel.handle_webhook(chat, %{"payload" => modal_payload}, [])
+             Adapter.handle_webhook(chat, %{"payload" => modal_payload}, [])
 
     assert_received :modal_submit_hit
 
@@ -379,7 +597,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
       }
     }
 
-    assert {:ok, _chat, _incoming} = Channel.handle_webhook(chat, reaction_payload, [])
+    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, reaction_payload, [])
     assert_received :reaction_hit
   end
 
@@ -434,7 +652,7 @@ defmodule Jido.Chat.Slack.ChannelTest do
     raw_body = Jason.encode!(%{"command" => "/help", "channel_id" => "C123", "user_id" => "U123"})
 
     assert {:error, :invalid_signature} =
-             Channel.handle_webhook(
+             Adapter.handle_webhook(
                chat,
                %{"command" => "/help", "channel_id" => "C123", "user_id" => "U123"},
                signing_secret: "secret",

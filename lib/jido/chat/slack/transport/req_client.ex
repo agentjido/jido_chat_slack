@@ -5,6 +5,8 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
 
   @behaviour Jido.Chat.Slack.Transport
 
+  alias Jido.Chat.FileUpload
+
   @base_url "https://slack.com/api"
 
   @impl true
@@ -17,6 +19,31 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
       )
 
     api_post("chat.postMessage", payload, opts)
+  end
+
+  @impl true
+  def send_file(channel_id, %FileUpload{} = upload, opts) do
+    with {:ok, filename, bytes} <- upload_bytes(upload),
+         {:ok, upload_url_result} <-
+           api_post(
+             "files.getUploadURLExternal",
+             upload_url_payload(upload, filename, byte_size(bytes)),
+             opts
+           ),
+         upload_url when is_binary(upload_url) <- upload_url_result["upload_url"],
+         file_id when is_binary(file_id) <- upload_url_result["file_id"],
+         :ok <- upload_external_file(upload_url, bytes, opts),
+         {:ok, complete_result} <-
+           api_post(
+             "files.completeUploadExternal",
+             complete_upload_payload(channel_id, file_id, filename, upload, opts),
+             opts
+           ) do
+      {:ok, complete_result}
+    else
+      nil -> {:error, :invalid_upload_response}
+      {:error, _reason} = error -> error
+    end
   end
 
   @impl true
@@ -239,6 +266,94 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
       Application.get_env(:jido_chat_slack, :slack_bot_token) ||
       raise ArgumentError,
             "missing Slack bot token; pass :token option or configure :jido_chat_slack, :slack_bot_token"
+  end
+
+  defp upload_bytes(%FileUpload{path: path, filename: filename})
+       when is_binary(path) and path != "" do
+    resolved_filename = filename || Path.basename(path)
+
+    case File.read(path) do
+      {:ok, bytes} when is_binary(bytes) and bytes != "" ->
+        {:ok, resolved_filename, bytes}
+
+      {:ok, _bytes} ->
+        {:error, :missing_file_source}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp upload_bytes(%FileUpload{data: data, filename: filename})
+       when is_binary(data) and data != "" and is_binary(filename) and filename != "" do
+    {:ok, filename, data}
+  end
+
+  defp upload_bytes(%FileUpload{data: data}) when is_binary(data) and data != "" do
+    {:error, :missing_filename}
+  end
+
+  defp upload_bytes(%FileUpload{url: url}) when is_binary(url) and url != "" do
+    {:error, :unsupported_remote_url}
+  end
+
+  defp upload_bytes(_upload), do: {:error, :missing_file_source}
+
+  defp upload_url_payload(upload, filename, length) do
+    %{
+      "filename" => filename,
+      "length" => length
+    }
+    |> maybe_put("alt_txt", upload_alt_text(upload))
+  end
+
+  defp complete_upload_payload(channel_id, file_id, filename, upload, opts) do
+    %{
+      "files" => [%{"id" => file_id, "title" => upload_title(upload, filename)}],
+      "channel_id" => stringify(channel_id)
+    }
+    |> maybe_put("initial_comment", upload_comment(upload, opts))
+    |> maybe_put("thread_ts", opts[:thread_ts] && stringify(opts[:thread_ts]))
+  end
+
+  defp upload_external_file(upload_url, bytes, opts) do
+    req_module = Keyword.get(opts, :req, Req)
+
+    case req_module.request(
+           method: :post,
+           url: upload_url,
+           headers: [{"content-type", "application/octet-stream"}],
+           body: bytes
+         ) do
+      {:ok, %Req.Response{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp upload_alt_text(%FileUpload{} = upload) do
+    metadata = upload.metadata || %{}
+    map_get(metadata, [:alt_text, "alt_text"])
+  end
+
+  defp upload_title(%FileUpload{} = upload, fallback) do
+    metadata = upload.metadata || %{}
+    map_get(metadata, [:title, "title"]) || upload.filename || fallback
+  end
+
+  defp upload_comment(%FileUpload{} = upload, opts) do
+    metadata = upload.metadata || %{}
+
+    Keyword.get(opts, :initial_comment) ||
+      Keyword.get(opts, :caption) ||
+      Keyword.get(opts, :text) ||
+      map_get(metadata, [:caption, "caption"]) ||
+      map_get(metadata, [:transcript, "transcript"])
   end
 
   defp encode_form(payload) do
