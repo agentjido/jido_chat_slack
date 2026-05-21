@@ -57,7 +57,7 @@ defmodule Jido.Chat.Slack.MixProject do
 
   defp deps do
     [
-      {:jido_chat, github: "agentjido/jido_chat", branch: "main"},
+      {:jido_chat, "~> 1.0"},
       {:req, "~> 0.5"},
       {:websockex, "~> 0.5.1"},
       {:jason, "~> 1.4"},

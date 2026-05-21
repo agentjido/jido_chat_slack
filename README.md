@@ -16,8 +16,7 @@ HTTP APIs via `Req`.
 ```elixir
 def deps do
   [
-    {:jido_chat, github: "agentjido/jido_chat", branch: "main"},
-    {:jido_chat_slack, github: "agentjido/jido_chat_slack", branch: "main"}
+    {:jido_chat_slack, "~> 1.0"}
   ]
 end
 ```
