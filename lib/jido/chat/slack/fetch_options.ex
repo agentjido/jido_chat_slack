@@ -11,6 +11,7 @@ defmodule Jido.Chat.Slack.FetchOptions do
               token: Zoi.string() |> Zoi.nullish(),
               transport: Zoi.any() |> Zoi.default(ReqClient),
               req: Zoi.any() |> Zoi.nullish(),
+              base_url: Zoi.string() |> Zoi.nullish(),
               cursor: Zoi.string() |> Zoi.nullish(),
               limit: Zoi.integer() |> Zoi.default(50),
               direction: Zoi.enum([:forward, :backward]) |> Zoi.default(:backward),
@@ -40,6 +41,7 @@ defmodule Jido.Chat.Slack.FetchOptions do
     []
     |> maybe_kw(:token, opts.token)
     |> maybe_kw(:req, opts.req)
+    |> maybe_kw(:base_url, opts.base_url)
     |> maybe_kw(:cursor, opts.cursor)
     |> maybe_kw(:thread_ts, opts.thread_ts && to_string(opts.thread_ts))
     |> maybe_kw(:inclusive, opts.inclusive)

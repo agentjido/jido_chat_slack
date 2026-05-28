@@ -223,7 +223,7 @@ defmodule Jido.Chat.Slack.Adapter do
 
   @impl true
   def delete_message(channel_id, message_id, opts \\ []) do
-    opts = opts |> pick_opts([:token, :transport, :req]) |> DeleteOptions.new()
+    opts = opts |> pick_opts([:token, :transport, :req, :base_url]) |> DeleteOptions.new()
 
     with {:ok, _result} <-
            transport(opts).delete_message(
@@ -241,7 +241,7 @@ defmodule Jido.Chat.Slack.Adapter do
   @impl true
   def fetch_metadata(channel_id, opts \\ []) do
     opts =
-      opts |> pick_opts([:token, :transport, :req, :include_num_members]) |> MetadataOptions.new()
+      opts |> pick_opts([:token, :transport, :req, :base_url, :include_num_members]) |> MetadataOptions.new()
 
     with {:ok, result} <-
            transport(opts).fetch_metadata(channel_id, MetadataOptions.transport_opts(opts)) do
@@ -303,7 +303,7 @@ defmodule Jido.Chat.Slack.Adapter do
   def fetch_message(channel_id, message_id, opts \\ []) do
     transport_opts =
       opts
-      |> pick_opts([:token, :transport, :req, :thread_ts, :external_thread_id])
+      |> pick_opts([:token, :transport, :req, :base_url, :thread_ts, :external_thread_id])
 
     with {:ok, raw_message} <-
            transport(transport_opts).fetch_message(channel_id, message_id, transport_opts),
@@ -318,7 +318,7 @@ defmodule Jido.Chat.Slack.Adapter do
 
   @impl true
   def open_dm(user_id, opts \\ []) do
-    transport_opts = pick_opts(opts, [:token, :transport, :req])
+    transport_opts = pick_opts(opts, [:token, :transport, :req, :base_url])
     transport(transport_opts).open_dm(user_id, transport_opts)
   end
 
@@ -362,7 +362,7 @@ defmodule Jido.Chat.Slack.Adapter do
 
   @impl true
   def open_modal(channel_id, payload, opts \\ []) when is_map(payload) do
-    opts = opts |> pick_opts([:token, :transport, :req, :trigger_id]) |> ModalOptions.new()
+    opts = opts |> pick_opts([:token, :transport, :req, :base_url, :trigger_id]) |> ModalOptions.new()
 
     if is_nil(opts.trigger_id) do
       {:error, :missing_trigger_id}
@@ -396,7 +396,7 @@ defmodule Jido.Chat.Slack.Adapter do
 
   @impl true
   def add_reaction(channel_id, message_id, emoji, opts \\ []) do
-    opts = opts |> pick_opts([:token, :transport, :req]) |> ReactionOptions.new()
+    opts = opts |> pick_opts([:token, :transport, :req, :base_url]) |> ReactionOptions.new()
 
     with {:ok, _result} <-
            transport(opts).add_reaction(
@@ -411,7 +411,7 @@ defmodule Jido.Chat.Slack.Adapter do
 
   @impl true
   def remove_reaction(channel_id, message_id, emoji, opts \\ []) do
-    opts = opts |> pick_opts([:token, :transport, :req]) |> ReactionOptions.new()
+    opts = opts |> pick_opts([:token, :transport, :req, :base_url]) |> ReactionOptions.new()
 
     with {:ok, _result} <-
            transport(opts).remove_reaction(
@@ -432,6 +432,7 @@ defmodule Jido.Chat.Slack.Adapter do
         :token,
         :transport,
         :req,
+        :base_url,
         :cursor,
         :limit,
         :direction,
@@ -475,7 +476,7 @@ defmodule Jido.Chat.Slack.Adapter do
   def list_threads(channel_id, opts \\ []) do
     fetch_opts =
       opts
-      |> pick_opts([:token, :transport, :req, :cursor, :limit, :direction])
+      |> pick_opts([:token, :transport, :req, :base_url, :cursor, :limit, :direction])
       |> FetchOptions.new()
 
     with :ok <- validate_history_direction(fetch_opts.direction),
@@ -1580,9 +1581,29 @@ defmodule Jido.Chat.Slack.Adapter do
     ]
   end
 
-  defp normalize_keyword_opts(value) when is_list(value), do: value
-  defp normalize_keyword_opts(value) when is_map(value), do: Enum.into(value, [])
+  defp normalize_keyword_opts(value) when is_list(value) do
+    Enum.reduce(value, [], fn
+      {key, value}, acc when is_atom(key) ->
+        Keyword.put(acc, key, value)
+
+      {key, value}, acc when is_binary(key) ->
+        case transport_key(key) do
+          nil -> acc
+          atom_key -> Keyword.put(acc, atom_key, value)
+        end
+
+      _other, acc ->
+        acc
+    end)
+  end
+
+  defp normalize_keyword_opts(value) when is_map(value), do: value |> Map.to_list() |> normalize_keyword_opts()
   defp normalize_keyword_opts(_value), do: []
+
+  defp transport_key("base_url"), do: :base_url
+  defp transport_key("req"), do: :req
+  defp transport_key("headers"), do: :headers
+  defp transport_key(_key), do: nil
 
   defp bridge_credentials(%{credentials: credentials}) when is_map(credentials), do: credentials
   defp bridge_credentials(_), do: %{}

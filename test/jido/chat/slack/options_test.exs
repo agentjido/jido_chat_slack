@@ -16,6 +16,7 @@ defmodule Jido.Chat.Slack.OptionsTest do
     options =
       SendOptions.new(
         token: "token",
+        base_url: "https://slack-proxy.test/api",
         blocks: [%{type: "section"}],
         thread_ts: "1706745600.000100",
         reply_broadcast: true,
@@ -33,6 +34,9 @@ defmodule Jido.Chat.Slack.OptionsTest do
 
     assert Keyword.get(SendOptions.transport_opts(options), :token) == "token"
     assert Keyword.get(SendOptions.transport_opts(options), :req) == :req_module
+
+    assert Keyword.get(SendOptions.transport_opts(options), :base_url) ==
+             "https://slack-proxy.test/api"
   end
 
   test "Edit and Ephemeral options normalize payloads" do
@@ -57,6 +61,7 @@ defmodule Jido.Chat.Slack.OptionsTest do
         limit: 25,
         direction: :forward,
         thread_ts: "1706745600.1",
+        base_url: "https://slack-proxy.test/api",
         req: :req_module
       )
 
@@ -69,6 +74,9 @@ defmodule Jido.Chat.Slack.OptionsTest do
     assert Keyword.get(FetchOptions.transport_opts(fetch_options), :limit) == 25
     assert Keyword.get(FetchOptions.transport_opts(fetch_options), :direction) == :forward
     assert Keyword.get(FetchOptions.transport_opts(fetch_options), :thread_ts) == "1706745600.1"
+
+    assert Keyword.get(FetchOptions.transport_opts(fetch_options), :base_url) ==
+             "https://slack-proxy.test/api"
 
     assert Keyword.get(MetadataOptions.transport_opts(metadata_options), :include_num_members) ==
              false
