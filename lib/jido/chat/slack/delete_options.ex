@@ -10,7 +10,8 @@ defmodule Jido.Chat.Slack.DeleteOptions do
             %{
               token: Zoi.string() |> Zoi.nullish(),
               transport: Zoi.any() |> Zoi.default(ReqClient),
-              req: Zoi.any() |> Zoi.nullish()
+              req: Zoi.any() |> Zoi.nullish(),
+              base_url: Zoi.string() |> Zoi.nullish()
             },
             coerce: true
           )
@@ -35,6 +36,7 @@ defmodule Jido.Chat.Slack.DeleteOptions do
     []
     |> maybe_kw(:token, opts.token)
     |> maybe_kw(:req, opts.req)
+    |> maybe_kw(:base_url, opts.base_url)
   end
 
   defp maybe_kw(keyword, _key, nil), do: keyword

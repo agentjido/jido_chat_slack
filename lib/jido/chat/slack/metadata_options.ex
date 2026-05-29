@@ -11,6 +11,7 @@ defmodule Jido.Chat.Slack.MetadataOptions do
               token: Zoi.string() |> Zoi.nullish(),
               transport: Zoi.any() |> Zoi.default(ReqClient),
               req: Zoi.any() |> Zoi.nullish(),
+              base_url: Zoi.string() |> Zoi.nullish(),
               include_num_members: Zoi.boolean() |> Zoi.default(true)
             },
             coerce: true
@@ -36,6 +37,7 @@ defmodule Jido.Chat.Slack.MetadataOptions do
     []
     |> maybe_kw(:token, opts.token)
     |> maybe_kw(:req, opts.req)
+    |> maybe_kw(:base_url, opts.base_url)
     |> Keyword.put(:include_num_members, opts.include_num_members)
   end
 

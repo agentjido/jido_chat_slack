@@ -82,6 +82,18 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
              ReqClient.send_message("C123", "hi", token: "xoxb-test", req: ErrorReq)
   end
 
+  test "send_message/3 uses runtime base_url for Slack API calls" do
+    assert {:ok, %{"ts" => "1706745600.000100"}} =
+             ReqClient.send_message("C123", "hi",
+               token: "xoxb-test",
+               req: MockReq,
+               base_url: "https://slack-proxy.test/api"
+             )
+
+    assert_received {:req_request, opts}
+    assert opts[:url] == "https://slack-proxy.test/api/chat.postMessage"
+  end
+
   test "send_file/3 performs Slack external upload flow" do
     assert {:ok, %{"files" => [%{"id" => "F123"}]}} =
              ReqClient.send_file(

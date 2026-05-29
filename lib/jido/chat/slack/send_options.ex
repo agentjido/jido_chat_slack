@@ -11,6 +11,7 @@ defmodule Jido.Chat.Slack.SendOptions do
               token: Zoi.string() |> Zoi.nullish(),
               transport: Zoi.any() |> Zoi.default(ReqClient),
               req: Zoi.any() |> Zoi.nullish(),
+              base_url: Zoi.string() |> Zoi.nullish(),
               blocks: Zoi.any() |> Zoi.nullish(),
               attachments: Zoi.any() |> Zoi.nullish(),
               thread_ts: Zoi.any() |> Zoi.nullish(),
@@ -64,6 +65,7 @@ defmodule Jido.Chat.Slack.SendOptions do
     []
     |> maybe_kw(:token, opts.token)
     |> maybe_kw(:req, opts.req)
+    |> maybe_kw(:base_url, opts.base_url)
   end
 
   defp maybe_put(map, _key, nil), do: map

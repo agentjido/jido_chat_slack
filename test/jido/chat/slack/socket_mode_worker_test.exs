@@ -82,11 +82,17 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
 
     assert {:ok, [spec]} =
              Adapter.listener_child_specs("bridge_slack",
-               ingress: %{mode: "socket_mode", app_token: "xapp-test"},
+               ingress: %{
+                 mode: "socket_mode",
+                 app_token: "xapp-test",
+                 transport_opts: %{"base_url" => "https://slack-proxy.test/api"}
+               },
                sink_mfa: {Sink, :emit, [self()]}
              )
 
     assert spec.id == {:slack_socket_mode_worker, "bridge_slack"}
+    assert {SocketModeWorker, :start_link, [worker_opts]} = spec.start
+    assert worker_opts[:open_client_opts][:base_url] == "https://slack-proxy.test/api"
   end
 
   test "socket mode worker acknowledges envelopes and emits inner payloads through sink" do

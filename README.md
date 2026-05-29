@@ -59,6 +59,16 @@ config :jido_chat_slack, :slack_signing_secret, System.get_env("SLACK_SIGNING_SE
 config :jido_chat_slack, :slack_app_token, System.get_env("SLACK_APP_TOKEN")
 ```
 
+To route Slack API calls through a proxy or local-compatible endpoint, pass
+`:base_url` at runtime:
+
+```elixir
+Adapter.send_message("C123", "hi",
+  token: System.fetch_env!("SLACK_BOT_TOKEN"),
+  base_url: "http://localhost:8081/api"
+)
+```
+
 ## Live Integration Test
 
 There is a live test module at:

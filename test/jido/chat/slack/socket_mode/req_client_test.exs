@@ -38,4 +38,15 @@ defmodule Jido.Chat.Slack.SocketMode.ReqClientTest do
     assert {:error, {:slack_api_error, "not_authed", _body}} =
              ReqClient.open_socket("xapp-test", req: ErrorReq)
   end
+
+  test "open_socket/2 uses runtime base_url" do
+    assert {:ok, "wss://slack.example/socket"} =
+             ReqClient.open_socket("xapp-test",
+               req: MockReq,
+               base_url: "https://slack-proxy.test/api"
+             )
+
+    assert_received {:req_request, opts}
+    assert opts[:url] == "https://slack-proxy.test/api/apps.connections.open"
+  end
 end
