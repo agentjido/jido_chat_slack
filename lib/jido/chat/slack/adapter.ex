@@ -1376,14 +1376,16 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp extract_action_value(_), do: nil
 
-  defp extract_modal_values(view) when is_map(view) do
-    view
-    |> map_get([:state, "state"])
-    |> maybe_get([:values, "values"])
-    |> normalize_struct()
+  defp extract_modal_values(view) do
+    if is_map(view) do
+      view
+      |> map_get([:state, "state"])
+      |> maybe_get([:values, "values"])
+      |> normalize_struct()
+    else
+      %{}
+    end
   end
-
-  defp extract_modal_values(_), do: %{}
 
   defp first_action(payload) do
     payload
