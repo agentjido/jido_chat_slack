@@ -155,8 +155,6 @@ defmodule Jido.Chat.Slack.InteractionResponse do
     )
   end
 
-  defp webhook_response_shape?(_response), do: false
-
   defp accepts_response_payload?(envelope) do
     map_get(envelope, [:accepts_response_payload, "accepts_response_payload"]) == true
   end
