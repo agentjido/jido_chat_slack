@@ -4,6 +4,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   alias Jido.Chat
   alias Jido.Chat.Adapter, as: ChatAdapter
   alias Jido.Chat.FileUpload
+  alias Jido.Chat.Media
   alias Jido.Chat.PostPayload
   alias Jido.Chat.Slack.Adapter
 
@@ -88,6 +89,12 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
          "text" => "single",
          "ts" => message_id
        }}
+    end
+
+    @impl true
+    def download_file(url, opts) do
+      send(self(), {:download_file, url, opts})
+      {:ok, "slack file bytes"}
     end
 
     @impl true
@@ -208,6 +215,9 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     end
 
     @impl true
+    def download_file(_url, _opts), do: {:error, :unsupported}
+
+    @impl true
     def fetch_messages(_channel_id, _opts), do: {:error, :unsupported}
 
     @impl true
@@ -241,6 +251,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     assert caps.edit_message == :native
     assert caps.open_thread == :native
     assert caps.start_typing == :unsupported
+    assert caps.fetch_media == :native
   end
 
   test "adapter capabilities matrix declares supported surfaces" do
@@ -286,13 +297,64 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
           "id" => "F1",
           "name" => "image.png",
           "mimetype" => "image/png",
-          "url_private" => "https://files.slack.com/image.png"
+          "url_private" => "https://files.slack.com/image.png",
+          "url_private_download" => "https://files.slack.com/image-download.png"
         }
       ]
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(message)
-    assert [%{kind: :image, url: "https://files.slack.com/image.png"}] = incoming.media
+
+    assert [%{kind: :image, url: "https://files.slack.com/image-download.png"}] =
+             incoming.media
+  end
+
+  test "transform_incoming/1 preserves file share comments" do
+    current_message = %{
+      "type" => "message",
+      "subtype" => "file_share",
+      "channel" => "C123",
+      "user" => "U123",
+      "text" => "Current file comment",
+      "ts" => "1706745600.000100",
+      "files" => [%{"id" => "F1", "url_private" => "https://files.slack.com/file.txt"}]
+    }
+
+    assert {:ok, current} = Adapter.transform_incoming(current_message)
+    assert current.text == "Current file comment"
+
+    legacy_message =
+      current_message
+      |> Map.put("text", "")
+      |> put_in(["files", Access.at(0), "initial_comment"], %{
+        "comment" => "Legacy file comment"
+      })
+
+    assert {:ok, legacy} = Adapter.transform_incoming(legacy_message)
+    assert legacy.text == "Legacy file comment"
+  end
+
+  test "fetch_media/2 downloads raw URLs and media references with a bot token" do
+    url = "https://files.slack.com/files-pri/T1-F1/file.png"
+
+    assert {:ok, "slack file bytes"} =
+             Adapter.fetch_media(url,
+               token: "xoxb-test",
+               transport: MockTransport
+             )
+
+    assert_received {:download_file, ^url, opts}
+    assert opts[:token] == "xoxb-test"
+
+    media = Media.new(%{url: url, filename: "file.png"})
+
+    assert {:ok, "slack file bytes"} =
+             Adapter.fetch_media(media,
+               token: "xoxb-test",
+               transport: MockTransport
+             )
+
+    assert_received {:download_file, ^url, _opts}
   end
 
   test "send/edit/delete/fetch metadata methods work" do

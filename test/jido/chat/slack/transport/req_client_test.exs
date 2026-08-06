@@ -23,6 +23,25 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
         "https://files.slack.com/upload/v1/abc123" ->
           {:ok, %Req.Response{status: 200, body: "OK - 12"}}
 
+        "https://files.slack.com/files-pri/T1-F123/image.png" ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             headers: %{"content-type" => ["image/png"]},
+             body: "image bytes"
+           }}
+
+        "https://files.slack.com/login" ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             headers: %{"content-type" => ["text/html; charset=utf-8"]},
+             body: "<html>sign in</html>"
+           }}
+
+        "https://files.slack.com/missing" ->
+          {:ok, %Req.Response{status: 404, body: "missing"}}
+
         "https://slack.com/api/files.completeUploadExternal" ->
           {:ok,
            %Req.Response{
@@ -125,5 +144,33 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
     assert complete_opts[:form]["initial_comment"] == "upload comment"
     assert complete_opts[:form]["thread_ts"] == "1706745600.000100"
     assert is_binary(complete_opts[:form]["files"])
+  end
+
+  test "download_file/2 sends bot authentication and returns raw bytes" do
+    url = "https://files.slack.com/files-pri/T1-F123/image.png"
+
+    assert {:ok, "image bytes"} =
+             ReqClient.download_file(url, token: "xoxb-test", req: MockReq)
+
+    assert_received {:req_request, opts}
+    assert opts[:method] == :get
+    assert opts[:url] == url
+    assert opts[:headers] == [{"authorization", "Bearer xoxb-test"}]
+    assert opts[:redirect] == true
+    assert opts[:decode_body] == false
+  end
+
+  test "download_file/2 rejects HTML and non-success responses" do
+    assert {:error, :unexpected_html_response} =
+             ReqClient.download_file("https://files.slack.com/login",
+               token: "xoxb-test",
+               req: MockReq
+             )
+
+    assert {:error, {:http_error, 404, "missing"}} =
+             ReqClient.download_file("https://files.slack.com/missing",
+               token: "xoxb-test",
+               req: MockReq
+             )
   end
 end
