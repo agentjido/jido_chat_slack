@@ -42,6 +42,9 @@ defmodule Jido.Chat.Slack.Transport do
               opts :: keyword()
             ) :: api_result()
 
+  @callback download_file(url :: String.t(), opts :: keyword()) ::
+              {:ok, binary()} | {:error, term()}
+
   @callback fetch_messages(channel_id :: String.t() | integer(), opts :: keyword()) ::
               api_result()
 

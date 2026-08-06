@@ -124,6 +124,39 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
   end
 
   @impl true
+  def download_file(url, opts) do
+    token = resolve_token(opts)
+    req_module = Keyword.get(opts, :req, Req)
+
+    request_opts = [
+      method: :get,
+      url: url,
+      headers: [{"authorization", "Bearer #{token}"}] ++ normalize_headers(opts[:headers]),
+      redirect: true,
+      decode_body: false
+    ]
+
+    case req_module.request(request_opts) do
+      {:ok, %Req.Response{status: status, body: body} = response}
+      when status in 200..299 and is_binary(body) ->
+        if html_response?(response) do
+          {:error, :unexpected_html_response}
+        else
+          {:ok, body}
+        end
+
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+        {:error, {:invalid_download_body, body}}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, {:http_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @impl true
   def fetch_messages(channel_id, opts) do
     payload =
       %{"channel" => stringify(channel_id), "limit" => Keyword.get(opts, :limit, 50)}
@@ -253,6 +286,17 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
 
   defp normalize_response(body) when is_map(body), do: {:ok, body}
   defp normalize_response(other), do: {:error, {:invalid_response, other}}
+
+  defp html_response?(response) do
+    response
+    |> Req.Response.get_header("content-type")
+    |> Enum.any?(fn content_type ->
+      content_type = String.downcase(content_type)
+
+      String.starts_with?(content_type, "text/html") or
+        String.starts_with?(content_type, "application/xhtml+xml")
+    end)
+  end
 
   defp api_url(method_name, opts) do
     base_url = Keyword.get(opts, :base_url, @base_url)

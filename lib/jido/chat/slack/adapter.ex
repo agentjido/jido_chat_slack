@@ -12,6 +12,7 @@ defmodule Jido.Chat.Slack.Adapter do
     EventEnvelope,
     FileUpload,
     Incoming,
+    Media,
     Message,
     MessagePage,
     ModalResult,
@@ -57,6 +58,7 @@ defmodule Jido.Chat.Slack.Adapter do
       fetch_metadata: :native,
       fetch_thread: :native,
       fetch_message: :native,
+      fetch_media: :native,
       add_reaction: :native,
       remove_reaction: :native,
       post_ephemeral: :native,
@@ -104,7 +106,7 @@ defmodule Jido.Chat.Slack.Adapter do
     with {:ok, message_payload, metadata} <- normalize_message_payload(payload) do
       channel_id = map_get(message_payload, [:channel, "channel"])
       user_id = message_user_id(message_payload)
-      text = map_get(message_payload, [:text, "text"])
+      text = message_text(message_payload)
       thread_ts = external_thread_id(message_payload)
       chat_type = parse_chat_type(message_payload)
       mentions = parse_mentions(text)
@@ -313,6 +315,15 @@ defmodule Jido.Chat.Slack.Adapter do
          adapter_name: :slack,
          thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id)
        )}
+    end
+  end
+
+  @impl true
+  def fetch_media(reference, opts \\ []) do
+    transport_opts = pick_opts(opts, [:token, :transport, :req, :headers])
+
+    with {:ok, url} <- media_url(reference) do
+      transport(transport_opts).download_file(url, transport_opts)
     end
   end
 
@@ -1103,6 +1114,38 @@ defmodule Jido.Chat.Slack.Adapter do
         }
       }
     end
+  end
+
+  defp media_url(url) when is_binary(url) and url != "", do: {:ok, url}
+  defp media_url(%Media{url: url}) when is_binary(url) and url != "", do: {:ok, url}
+  defp media_url(_reference), do: {:error, :invalid_media_reference}
+
+  defp message_text(message) do
+    case map_get(message, [:text, "text"]) do
+      text when is_binary(text) and text != "" -> text
+      _ -> initial_file_comment(message)
+    end
+  end
+
+  defp initial_file_comment(message) do
+    message
+    |> map_get([:files, "files"])
+    |> List.wrap()
+    |> Enum.find_value(fn file ->
+      case map_get(file, [:initial_comment, "initial_comment"]) do
+        comment when is_binary(comment) and comment != "" ->
+          comment
+
+        comment when is_map(comment) ->
+          case map_get(comment, [:comment, "comment", :text, "text"]) do
+            text when is_binary(text) and text != "" -> text
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+    end)
   end
 
   defp media_kind(file) do
