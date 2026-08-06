@@ -1097,8 +1097,8 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp normalize_media(file) when is_map(file) do
     url =
-      map_get(file, [:url_private, "url_private"]) ||
-        map_get(file, [:url_private_download, "url_private_download"])
+      map_get(file, [:url_private_download, "url_private_download"]) ||
+        map_get(file, [:url_private, "url_private"])
 
     if is_nil(url) do
       nil

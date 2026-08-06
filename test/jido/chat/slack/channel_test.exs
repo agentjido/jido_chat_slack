@@ -297,13 +297,16 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
           "id" => "F1",
           "name" => "image.png",
           "mimetype" => "image/png",
-          "url_private" => "https://files.slack.com/image.png"
+          "url_private" => "https://files.slack.com/image.png",
+          "url_private_download" => "https://files.slack.com/image-download.png"
         }
       ]
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(message)
-    assert [%{kind: :image, url: "https://files.slack.com/image.png"}] = incoming.media
+
+    assert [%{kind: :image, url: "https://files.slack.com/image-download.png"}] =
+             incoming.media
   end
 
   test "transform_incoming/1 preserves file share comments" do
