@@ -23,3 +23,10 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+    ignore:
+      - dependency-name: "agentjido/github-actions/.github/workflows/elixir-lint.yml"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "agentjido/github-actions/.github/workflows/elixir-test.yml"
+        update-types:
+          - "version-update:semver-major"
