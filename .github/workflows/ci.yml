@@ -9,7 +9,7 @@ on:
 jobs:
   lint:
     name: Lint
-    uses: agentjido/github-actions/.github/workflows/elixir-lint.yml@v3
+    uses: agentjido/github-actions/.github/workflows/elixir-lint.yml@v5
     with:
       otp_version: "27.3"
       elixir_version: "1.18.4"
