@@ -40,6 +40,7 @@ defmodule Jido.Chat.Slack.Adapter do
   alias Jido.Chat.Slack.Transport.ReqClient
 
   @signature_prefix "v0="
+  @media_type_pattern ~r/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
   @image_filetypes ~w(avif bmp gif heic heif jpeg jpg png svg tif tiff webp)
   @audio_filetypes ~w(aac flac m4a mp3 ogg wav)
   @video_filetypes ~w(avi m4v mkv mov mp4 webm)
@@ -1100,11 +1101,13 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp normalize_media(file) when is_map(file) do
     url =
-      map_get(file, [:url_private_download, "url_private_download"]) ||
+      first_non_blank([
+        map_get(file, [:url_private_download, "url_private_download"]),
         map_get(file, [:url_private, "url_private"])
+      ])
 
-    filename = map_get(file, [:name, "name"])
-    media_type = file |> map_get([:mimetype, "mimetype"]) |> non_empty_string()
+    filename = file |> map_get([:name, "name"]) |> blank_to_nil()
+    media_type = file |> map_get([:mimetype, "mimetype"]) |> normalize_media_type()
 
     if is_nil(url) do
       nil
@@ -1158,40 +1161,69 @@ defmodule Jido.Chat.Slack.Adapter do
   defp media_kind(file, media_type, filename, url) do
     media_kind_from_type(media_type) ||
       media_kind_from_filetype(map_get(file, [:filetype, "filetype"])) ||
-      media_kind_from_extension(filename || url) ||
+      media_kind_from_extension(first_non_blank([filename, url])) ||
       :file
   end
 
-  defp media_kind_from_type("image/" <> _rest), do: :image
-  defp media_kind_from_type("video/" <> _rest), do: :video
-  defp media_kind_from_type("audio/" <> _rest), do: :audio
+  defp media_kind_from_type(media_type) when is_binary(media_type) do
+    case canonical_media_type(media_type) do
+      "image/" <> _rest -> :image
+      "video/" <> _rest -> :video
+      "audio/" <> _rest -> :audio
+      _other -> :file
+    end
+  end
+
   defp media_kind_from_type(_media_type), do: nil
 
-  defp media_kind_from_filetype(filetype) when filetype in @image_filetypes, do: :image
-  defp media_kind_from_filetype(filetype) when filetype in @audio_filetypes, do: :audio
-  defp media_kind_from_filetype(filetype) when filetype in @video_filetypes, do: :video
+  defp media_kind_from_filetype(filetype) when is_binary(filetype) do
+    case filetype |> String.trim() |> String.trim_leading(".") |> String.downcase() do
+      normalized when normalized in @image_filetypes -> :image
+      normalized when normalized in @audio_filetypes -> :audio
+      normalized when normalized in @video_filetypes -> :video
+      _other -> nil
+    end
+  end
+
   defp media_kind_from_filetype(_filetype), do: nil
 
   defp media_kind_from_extension(reference) when is_binary(reference) do
     reference
     |> URI.parse()
     |> Map.get(:path)
-    |> Path.extname()
-    |> String.trim_leading(".")
-    |> String.downcase()
+    |> case do
+      path when is_binary(path) -> path |> Path.extname() |> String.trim_leading(".") |> String.downcase()
+      _other -> ""
+    end
     |> media_kind_from_filetype()
   end
 
   defp media_kind_from_extension(_reference), do: nil
 
-  defp non_empty_string(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      trimmed -> trimmed
-    end
+  defp normalize_media_type(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)),
+      do: trimmed,
+      else: nil
   end
 
-  defp non_empty_string(_value), do: nil
+  defp normalize_media_type(_value), do: nil
+
+  defp canonical_media_type(value) do
+    value
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp first_non_blank(values), do: Enum.find_value(values, &blank_to_nil/1)
+
+  defp blank_to_nil(value) when is_binary(value),
+    do: if(String.trim(value) == "", do: nil, else: value)
+
+  defp blank_to_nil(_value), do: nil
 
   defp parse_mentions(text) when is_binary(text) do
     Regex.scan(~r/<@([A-Z0-9]+)>/, text, return: :index)

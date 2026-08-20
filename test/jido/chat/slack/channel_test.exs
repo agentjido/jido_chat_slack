@@ -319,13 +319,28 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
           "mimetype" => nil,
           "filetype" => "unknown",
           "url_private_download" => "https://files.slack.com/download/F4"
+        },
+        %{
+          "id" => "F5",
+          "name" => " ",
+          "mimetype" => nil,
+          "url_private_download" => " ",
+          "url_private" => "https://files.slack.com/files/photo.PNG?token=signed"
+        },
+        %{
+          "id" => "F6",
+          "name" => "misleading.png",
+          "mimetype" => " application/pdf; charset=binary ",
+          "filetype" => "PNG",
+          "url_private_download" => "https://files.slack.com/download/F6"
         }
       ]
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(message)
 
-    assert [explicit, filename_fallback, filetype_fallback, unknown] = incoming.media
+    assert [explicit, filename_fallback, filetype_fallback, unknown, signed_url, misleading] =
+             incoming.media
 
     assert explicit.kind == :image
     assert explicit.url == "https://files.slack.com/image-download.png"
@@ -342,6 +357,13 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
 
     assert unknown.kind == :file
     assert unknown.media_type == nil
+
+    assert signed_url.kind == :image
+    assert signed_url.url == "https://files.slack.com/files/photo.PNG?token=signed"
+    assert signed_url.filename == nil
+
+    assert misleading.kind == :file
+    assert misleading.media_type == "application/pdf; charset=binary"
   end
 
   test "transform_incoming/1 preserves file share comments" do
