@@ -299,14 +299,49 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
           "mimetype" => "image/png",
           "url_private" => "https://files.slack.com/image.png",
           "url_private_download" => "https://files.slack.com/image-download.png"
+        },
+        %{
+          "id" => "F2",
+          "name" => "fallback.png",
+          "mimetype" => nil,
+          "url_private_download" => "https://files.slack.com/download/F2"
+        },
+        %{
+          "id" => "F3",
+          "name" => "extensionless",
+          "mimetype" => " ",
+          "filetype" => "png",
+          "url_private_download" => "https://files.slack.com/download/F3"
+        },
+        %{
+          "id" => "F4",
+          "name" => "archive.unknown",
+          "mimetype" => nil,
+          "filetype" => "unknown",
+          "url_private_download" => "https://files.slack.com/download/F4"
         }
       ]
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(message)
 
-    assert [%{kind: :image, url: "https://files.slack.com/image-download.png"}] =
-             incoming.media
+    assert [explicit, filename_fallback, filetype_fallback, unknown] = incoming.media
+
+    assert explicit.kind == :image
+    assert explicit.url == "https://files.slack.com/image-download.png"
+    assert explicit.media_type == "image/png"
+    assert explicit.filename == "image.png"
+
+    assert filename_fallback.kind == :image
+    assert filename_fallback.media_type == nil
+    assert filename_fallback.filename == "fallback.png"
+
+    assert filetype_fallback.kind == :image
+    assert filetype_fallback.media_type == nil
+    assert filetype_fallback.filename == "extensionless"
+
+    assert unknown.kind == :file
+    assert unknown.media_type == nil
   end
 
   test "transform_incoming/1 preserves file share comments" do
