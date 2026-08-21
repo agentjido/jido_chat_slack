@@ -63,6 +63,23 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
              }
            }}
 
+        "https://slack.com/api/users.info" ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{"ok" => true, "user" => %{"id" => "U123", "name" => "ada"}}
+           }}
+
+        "https://slack.com/api/chat.getPermalink" ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{
+               "ok" => true,
+               "permalink" => "https://workspace.slack.com/archives/C123/p1706745600000100"
+             }
+           }}
+
         _other ->
           {:ok,
            %Req.Response{
@@ -76,6 +93,18 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
   defmodule ErrorReq do
     def request(_opts) do
       {:ok, %Req.Response{status: 200, body: %{"ok" => false, "error" => "channel_not_found"}}}
+    end
+  end
+
+  defmodule MalformedResourceReq do
+    def request(opts) do
+      body =
+        case opts[:url] do
+          "https://slack.com/api/users.info" -> %{"ok" => true, "user" => "U123"}
+          "https://slack.com/api/chat.getPermalink" -> %{"ok" => true, "permalink" => %{url: "x"}}
+        end
+
+      {:ok, %Req.Response{status: 200, body: body}}
     end
   end
 
@@ -99,6 +128,56 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
   test "Slack API errors are surfaced explicitly" do
     assert {:error, {:slack_api_error, "channel_not_found", _body}} =
              ReqClient.send_message("C123", "hi", token: "xoxb-test", req: ErrorReq)
+  end
+
+  test "resource operations use the matching Slack Web API methods" do
+    assert {:ok, %{"id" => "U123", "name" => "ada"}} =
+             ReqClient.get_user("U123", token: "xoxb-test", req: MockReq)
+
+    assert_received {:req_request, user_opts}
+    assert user_opts[:url] == "https://slack.com/api/users.info"
+    assert user_opts[:form] == %{"user" => "U123"}
+
+    assert {:ok, "https://workspace.slack.com/archives/C123/p1706745600000100"} =
+             ReqClient.get_permalink("C123", "1706745600.000100",
+               token: "xoxb-test",
+               req: MockReq
+             )
+
+    assert_received {:req_request, permalink_opts}
+    assert permalink_opts[:url] == "https://slack.com/api/chat.getPermalink"
+    assert permalink_opts[:form]["channel"] == "C123"
+    assert permalink_opts[:form]["message_ts"] == "1706745600.000100"
+
+    assert {:ok, true} =
+             ReqClient.mark_as_read("C123", "1706745600.000100",
+               token: "xoxb-test",
+               req: MockReq
+             )
+
+    assert_received {:req_request, receipt_opts}
+    assert receipt_opts[:url] == "https://slack.com/api/conversations.mark"
+    assert receipt_opts[:form]["channel"] == "C123"
+    assert receipt_opts[:form]["ts"] == "1706745600.000100"
+  end
+
+  test "resource operations reject malformed successful responses" do
+    assert {:error, :invalid_user_response} =
+             ReqClient.get_user("U123", token: "xoxb-test", req: MalformedResourceReq)
+
+    assert {:error, :invalid_permalink_response} =
+             ReqClient.get_permalink("C123", "1706745600.000100",
+               token: "xoxb-test",
+               req: MalformedResourceReq
+             )
+  end
+
+  test "resource operations preserve Slack API errors" do
+    assert {:error, {:slack_api_error, "channel_not_found", _body}} =
+             ReqClient.get_user("U123", token: "xoxb-test", req: ErrorReq)
+
+    assert {:error, {:slack_api_error, "channel_not_found", _body}} =
+             ReqClient.get_permalink("C123", "1706745600.000100", token: "xoxb-test", req: ErrorReq)
   end
 
   test "send_message/3 uses runtime base_url for Slack API calls" do

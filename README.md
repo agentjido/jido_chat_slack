@@ -114,6 +114,23 @@ Slack history fetches currently support backward pagination only. Passing
 `direction: :forward` returns `{:error, :unsupported_direction}` instead of
 silently ignoring the option.
 
+## Resource Context and Read Receipts
+
+The adapter supplies native Slack data for the core resource contracts:
+
+- `get_user/2` returns normalized Slack profile data.
+- `fetch_subject/2` uses the channel topic for a channel subject. When you pass
+  `:external_thread_id`, `:thread_ts`, or `:message_id`, it returns the thread
+  root text and permalink.
+- `get_thread_participants/2` follows Slack reply cursors and returns unique
+  canonical participants. `:limit`, `:page_size`, and `:max_pages` bound the
+  work. The call returns `{:error, :participant_page_limit_exceeded}` instead
+  of a partial result when `:max_pages` is reached.
+- `mark_as_read/3` uses `conversations.mark`. Repeated calls are safe.
+
+These calls require the related Slack token scopes. Slack provider errors are
+returned without conversion.
+
 For interaction responses, you can either:
 
 - set `chat.metadata[:slack_response]` inside a slash/action/modal handler when
