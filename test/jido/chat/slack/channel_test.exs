@@ -5,7 +5,11 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   alias Jido.Chat.Adapter, as: ChatAdapter
   alias Jido.Chat.FileUpload
   alias Jido.Chat.Media
+  alias Jido.Chat.MessageSubject
+  alias Jido.Chat.Participant
   alias Jido.Chat.PostPayload
+  alias Jido.Chat.Thread
+  alias Jido.Chat.UserInfo
   alias Jido.Chat.Slack.Adapter
 
   setup_all do
@@ -67,8 +71,40 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
          "id" => channel_id,
          "name" => "general",
          "is_channel" => true,
-         "num_members" => 12
+         "num_members" => 12,
+         "topic" => %{"value" => "Release coordination"},
+         "purpose" => %{"value" => "Ship the next release"}
        }}
+    end
+
+    @impl true
+    def get_user(user_id, _opts) do
+      send(self(), {:get_user, user_id})
+
+      {:ok,
+       %{
+         "id" => user_id,
+         "name" => String.downcase(user_id),
+         "real_name" => "User #{user_id}",
+         "profile" => %{
+           "display_name" => "Display #{user_id}",
+           "email" => "#{String.downcase(user_id)}@example.test",
+           "image_192" => "https://example.test/#{user_id}.png"
+         },
+         "is_bot" => user_id == "UBOT"
+       }}
+    end
+
+    @impl true
+    def get_permalink(channel_id, message_id, _opts) do
+      send(self(), {:get_permalink, channel_id, message_id})
+      {:ok, "https://workspace.slack.com/archives/#{channel_id}/p#{message_id}"}
+    end
+
+    @impl true
+    def mark_as_read(channel_id, message_id, _opts) do
+      send(self(), {:mark_as_read, channel_id, message_id})
+      {:ok, true}
     end
 
     @impl true
@@ -78,8 +114,8 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     end
 
     @impl true
-    def fetch_message(channel_id, message_id, _opts) do
-      send(self(), {:fetch_message, channel_id, message_id})
+    def fetch_message(channel_id, message_id, opts) do
+      send(self(), {:fetch_message, channel_id, message_id, opts})
 
       {:ok,
        %{
@@ -180,6 +216,56 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     end
   end
 
+  defmodule PaginatedParticipantsTransport do
+    def fetch_messages("C123", opts) do
+      send(self(), {:participant_page, opts[:cursor], opts[:limit]})
+
+      case opts[:cursor] do
+        nil ->
+          {:ok,
+           %{
+             "messages" => [
+               %{"user" => "U1", "ts" => "1"},
+               %{"user" => "U1", "ts" => "2"}
+             ],
+             "response_metadata" => %{"next_cursor" => "page-2"}
+           }}
+
+        "page-2" ->
+          {:ok,
+           %{
+             "messages" => [
+               %{"user" => "U2", "ts" => "3"},
+               %{
+                 "bot_id" => "B1",
+                 "username" => "deploy-bot",
+                 "bot_profile" => %{"name" => "Deploy Bot", "icons" => %{"image_72" => "bot.png"}},
+                 "ts" => "4"
+               }
+             ],
+             "response_metadata" => %{"next_cursor" => ""}
+           }}
+      end
+    end
+
+    def get_user(user_id, _opts) do
+      {:ok,
+       %{
+         "id" => user_id,
+         "name" => String.downcase(user_id),
+         "profile" => %{"display_name" => "Person #{user_id}"}
+       }}
+    end
+  end
+
+  defmodule MalformedUserTransport do
+    def get_user(_user_id, _opts), do: {:ok, "U123"}
+  end
+
+  defmodule FailingUserTransport do
+    def get_user(_user_id, _opts), do: {:error, :provider_down}
+  end
+
   defmodule ChannelOmittingTransport do
     @behaviour Jido.Chat.Slack.Transport
 
@@ -213,6 +299,15 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
          "ts" => message_id
        }}
     end
+
+    @impl true
+    def get_user(_user_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def get_permalink(_channel_id, _message_id, _opts), do: {:error, :unsupported}
+
+    @impl true
+    def mark_as_read(_channel_id, _message_id, _opts), do: {:error, :unsupported}
 
     @impl true
     def download_file(_url, _opts), do: {:error, :unsupported}
@@ -263,8 +358,129 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     assert caps.start_typing == :unsupported
     assert caps.open_modal == :native
     assert caps.list_threads == :native
+    assert caps.get_user == :native
+    assert caps.fetch_subject == :native
+    assert caps.get_thread_participants == :native
+    assert caps.mark_as_read == :native
 
     assert :ok = Jido.Chat.Adapter.validate_capabilities(Jido.Chat.Slack.Adapter)
+  end
+
+  test "get_user/2 returns normalized Slack user information" do
+    assert {:ok,
+            %UserInfo{
+              id: "U123",
+              username: "u123",
+              display_name: "Display U123",
+              email: "u123@example.test",
+              avatar_url: "https://example.test/U123.png",
+              is_bot: false
+            }} = Adapter.get_user("U123", transport: MockTransport)
+
+    assert_received {:get_user, "U123"}
+  end
+
+  test "get_user/2 rejects malformed successful transport responses" do
+    assert {:error, :invalid_user_response} =
+             Adapter.get_user("U123", transport: MalformedUserTransport)
+  end
+
+  test "get_user/2 preserves transport errors" do
+    assert {:error, :provider_down} = Adapter.get_user("U123", transport: FailingUserTransport)
+  end
+
+  test "fetch_subject/2 returns channel and thread subjects" do
+    assert {:ok,
+            %MessageSubject{
+              type: "slack_channel",
+              id: "C123",
+              title: "Release coordination",
+              status: "open"
+            }} = Adapter.fetch_subject("C123", transport: MockTransport)
+
+    assert {:ok,
+            %MessageSubject{
+              type: "slack_thread",
+              id: "1706745600.000100",
+              title: "single",
+              url: "https://workspace.slack.com/archives/C123/p1706745600.000100",
+              status: "open"
+            }} =
+             Adapter.fetch_subject("C123",
+               external_thread_id: "1706745600.000100",
+               transport: MockTransport
+             )
+
+    assert_received {:fetch_message, "C123", "1706745600.000100", fetch_opts}
+    assert fetch_opts[:thread_ts] == "1706745600.000100"
+    assert fetch_opts[:limit] == 1
+  end
+
+  test "get_thread_participants/2 follows cursors, de-duplicates users, and includes bots" do
+    assert {:ok,
+            [
+              %Participant{id: "U1", type: :human},
+              %Participant{id: "U2", type: :human},
+              %Participant{id: "B1", type: :agent}
+            ]} =
+             ChatAdapter.get_thread_participants(Adapter, "C123",
+               external_thread_id: "1",
+               transport: PaginatedParticipantsTransport,
+               limit: 3,
+               page_size: 2
+             )
+
+    assert_received {:participant_page, nil, 2}
+    assert_received {:participant_page, "page-2", 2}
+  end
+
+  test "get_thread_participants/2 enforces participant and page limits" do
+    assert {:ok, [%Participant{id: "U1"}]} =
+             ChatAdapter.get_thread_participants(Adapter, "C123",
+               external_thread_id: "1",
+               transport: PaginatedParticipantsTransport,
+               limit: 1
+             )
+
+    assert {:error, :participant_page_limit_exceeded} =
+             ChatAdapter.get_thread_participants(Adapter, "C123",
+               external_thread_id: "1",
+               transport: PaginatedParticipantsTransport,
+               limit: 3,
+               max_pages: 1
+             )
+  end
+
+  test "thread handles pass the external Slack thread timestamp to resource helpers" do
+    thread =
+      Thread.new(%{
+        id: "slack:C123:1",
+        adapter_name: :slack,
+        adapter: Adapter,
+        external_room_id: "C123",
+        external_thread_id: "1"
+      })
+
+    assert {:ok, %MessageSubject{id: "1", type: "slack_thread"}} =
+             Thread.fetch_subject(thread, transport: MockTransport)
+
+    assert {:ok,
+            [
+              %Participant{id: "U1"},
+              %Participant{id: "U2"},
+              %Participant{id: "B1"}
+            ]} = Thread.participants(thread, transport: PaginatedParticipantsTransport, limit: 3)
+  end
+
+  test "mark_as_read/3 delegates an idempotent Slack receipt" do
+    assert :ok =
+             ChatAdapter.mark_as_read(Adapter, "C123", "1706745600.000100", transport: MockTransport)
+
+    assert :ok =
+             ChatAdapter.mark_as_read(Adapter, "C123", "1706745600.000100", transport: MockTransport)
+
+    assert_received {:mark_as_read, "C123", "1706745600.000100"}
+    assert_received {:mark_as_read, "C123", "1706745600.000100"}
   end
 
   test "transform_incoming/1 normalizes a slack message map" do

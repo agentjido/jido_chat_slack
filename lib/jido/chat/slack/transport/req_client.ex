@@ -124,6 +124,45 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
   end
 
   @impl true
+  def get_user(user_id, opts) do
+    with {:ok, result} when is_map(result) <- api_post("users.info", %{"user" => stringify(user_id)}, opts),
+         user when is_map(user) <- result["user"] do
+      {:ok, user}
+    else
+      nil -> {:error, :missing_user}
+      {:error, _reason} = error -> error
+      _other -> {:error, :invalid_user_response}
+    end
+  end
+
+  @impl true
+  def get_permalink(channel_id, message_id, opts) do
+    payload = %{
+      "channel" => stringify(channel_id),
+      "message_ts" => stringify(message_id)
+    }
+
+    with {:ok, result} when is_map(result) <- api_post("chat.getPermalink", payload, opts),
+         permalink when is_binary(permalink) <- result["permalink"] do
+      {:ok, permalink}
+    else
+      nil -> {:error, :missing_permalink}
+      {:error, _reason} = error -> error
+      _other -> {:error, :invalid_permalink_response}
+    end
+  end
+
+  @impl true
+  def mark_as_read(channel_id, message_id, opts) do
+    payload = %{"channel" => stringify(channel_id), "ts" => stringify(message_id)}
+
+    case api_post("conversations.mark", payload, opts) do
+      {:ok, _result} -> {:ok, true}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @impl true
   def download_file(url, opts) do
     token = resolve_token(opts)
     req_module = Keyword.get(opts, :req, Req)

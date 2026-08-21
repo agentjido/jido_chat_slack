@@ -16,12 +16,14 @@ defmodule Jido.Chat.Slack.Adapter do
     Message,
     MessageDeletedEvent,
     MessagePage,
+    MessageSubject,
     MessageUpdatedEvent,
     ModalResult,
     Response,
     SlashCommandEvent,
     ThreadPage,
     ThreadSummary,
+    UserInfo,
     WebhookRequest,
     WebhookResponse
   }
@@ -64,6 +66,10 @@ defmodule Jido.Chat.Slack.Adapter do
       fetch_metadata: :native,
       fetch_thread: :native,
       fetch_message: :native,
+      get_user: :native,
+      fetch_subject: :native,
+      get_thread_participants: :native,
+      mark_as_read: :native,
       fetch_media: :native,
       add_reaction: :native,
       remove_reaction: :native,
@@ -319,6 +325,74 @@ defmodule Jido.Chat.Slack.Adapter do
          thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id)
        )}
     end
+  end
+
+  @impl true
+  def get_user(user_id, opts \\ []) do
+    transport_opts = pick_opts(opts, [:token, :transport, :req, :base_url])
+
+    with {:ok, raw_user} when is_map(raw_user) <-
+           transport(transport_opts).get_user(user_id, transport_opts) do
+      {:ok, user_info(raw_user, user_id)}
+    else
+      {:ok, _raw_user} -> {:error, :invalid_user_response}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @impl true
+  def fetch_subject(channel_id, opts \\ []) do
+    transport_opts =
+      pick_opts(opts, [
+        :token,
+        :transport,
+        :req,
+        :base_url,
+        :thread_ts,
+        :external_thread_id,
+        :message_id,
+        :thread_id,
+        :include_num_members
+      ])
+      |> Keyword.put_new(:include_num_members, false)
+
+    thread_ts =
+      opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id] || opts[:thread_id]
+
+    with {:ok, channel} <- transport(transport_opts).fetch_metadata(channel_id, transport_opts) do
+      build_subject(channel_id, thread_ts, channel, transport_opts)
+    end
+  end
+
+  @impl true
+  def get_thread_participants(channel_id, opts \\ []) do
+    thread_ts =
+      opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id] || opts[:thread_id]
+
+    with {:ok, thread_ts} <- require_thread_ts(thread_ts),
+         {:ok, limit} <- bounded_positive_integer(opts[:limit], 100, 1_000, :invalid_limit),
+         {:ok, page_size} <-
+           bounded_positive_integer(opts[:page_size], min(limit, 100), 200, :invalid_page_size),
+         {:ok, max_pages} <-
+           bounded_positive_integer(opts[:max_pages], 20, 100, :invalid_max_pages),
+         {:ok, entries} <-
+           collect_participant_entries(
+             channel_id,
+             thread_ts,
+             opts,
+             limit,
+             page_size,
+             max_pages
+           ),
+         {:ok, users} <- participant_entries_to_users(entries, opts) do
+      {:ok, users}
+    end
+  end
+
+  @impl true
+  def mark_as_read(channel_id, message_id, opts \\ []) do
+    transport_opts = pick_opts(opts, [:token, :transport, :req, :base_url])
+    transport(transport_opts).mark_as_read(channel_id, message_id, transport_opts)
   end
 
   @impl true
@@ -1409,6 +1483,263 @@ defmodule Jido.Chat.Slack.Adapter do
       end
     end)
   end
+
+  defp build_subject(channel_id, nil, channel, _transport_opts) do
+    channel = normalize_struct(channel)
+
+    {:ok,
+     MessageSubject.new(%{
+       type: "slack_channel",
+       id: stringify(channel_id),
+       title: channel_subject_title(channel),
+       status: conversation_status(channel),
+       metadata: subject_metadata(channel_id, nil, channel)
+     })}
+  end
+
+  defp build_subject(channel_id, thread_ts, channel, transport_opts) do
+    with {:ok, root} <-
+           transport(transport_opts).fetch_message(
+             channel_id,
+             thread_ts,
+             transport_opts
+             |> Keyword.put(:thread_ts, thread_ts)
+             |> Keyword.put(:limit, 1)
+           ),
+         {:ok, permalink} <-
+           transport(transport_opts).get_permalink(channel_id, thread_ts, transport_opts) do
+      channel = normalize_struct(channel)
+      root = normalize_struct(root)
+
+      {:ok,
+       MessageSubject.new(%{
+         type: "slack_thread",
+         id: stringify(thread_ts),
+         title: first_non_blank([message_text(root), channel_subject_title(channel)]),
+         url: permalink,
+         status: conversation_status(channel),
+         metadata: subject_metadata(channel_id, thread_ts, channel)
+       })}
+    end
+  end
+
+  defp channel_subject_title(channel) do
+    first_non_blank([
+      channel |> map_get([:topic, "topic"]) |> maybe_get([:value, "value"]),
+      channel |> map_get([:purpose, "purpose"]) |> maybe_get([:value, "value"]),
+      map_get(channel, [:name, "name"])
+    ])
+  end
+
+  defp conversation_status(channel) do
+    if map_get(channel, [:is_archived, "is_archived"]), do: "archived", else: "open"
+  end
+
+  defp subject_metadata(channel_id, thread_ts, channel) do
+    %{
+      provider: :slack,
+      channel_id: stringify(channel_id),
+      thread_ts: stringify(thread_ts),
+      channel_name: map_get(channel, [:name, "name"]),
+      topic: channel |> map_get([:topic, "topic"]) |> maybe_get([:value, "value"]),
+      purpose: channel |> map_get([:purpose, "purpose"]) |> maybe_get([:value, "value"])
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp collect_participant_entries(channel_id, thread_ts, opts, limit, page_size, max_pages) do
+    transport_opts = pick_opts(opts, [:token, :transport, :req, :base_url])
+
+    state = %{
+      limit: limit,
+      page_size: page_size,
+      max_pages: max_pages,
+      cursor: nil,
+      page_count: 0,
+      seen: MapSet.new(),
+      entries: [],
+      entry_count: 0
+    }
+
+    collect_participant_entries(channel_id, thread_ts, transport_opts, state)
+  end
+
+  defp collect_participant_entries(
+         _channel_id,
+         _thread_ts,
+         _transport_opts,
+         %{entry_count: count, limit: limit, entries: entries}
+       )
+       when count >= limit,
+       do: {:ok, Enum.reverse(entries)}
+
+  defp collect_participant_entries(
+         _channel_id,
+         _thread_ts,
+         _transport_opts,
+         %{page_count: page_count, max_pages: max_pages, cursor: cursor}
+       )
+       when page_count >= max_pages and not is_nil(cursor),
+       do: {:error, :participant_page_limit_exceeded}
+
+  defp collect_participant_entries(channel_id, thread_ts, transport_opts, state) do
+    page_opts =
+      transport_opts
+      |> Keyword.put(:thread_ts, thread_ts)
+      |> Keyword.put(:limit, state.page_size)
+      |> maybe_put_kw(:cursor, state.cursor)
+
+    with {:ok, result} <- transport(transport_opts).fetch_messages(channel_id, page_opts) do
+      state =
+        result
+        |> map_get([:messages, "messages"])
+        |> List.wrap()
+        |> Enum.reduce_while(state, fn message, state ->
+          case participant_entry(message) do
+            nil ->
+              {:cont, state}
+
+            {key, entry} ->
+              cond do
+                MapSet.member?(state.seen, key) ->
+                  {:cont, state}
+
+                state.entry_count + 1 >= state.limit ->
+                  {:halt, add_participant_entry(state, key, entry)}
+
+                true ->
+                  {:cont, add_participant_entry(state, key, entry)}
+              end
+          end
+        end)
+
+      next_cursor = next_cursor(result) |> blank_to_nil()
+
+      if is_nil(next_cursor) do
+        {:ok, Enum.reverse(state.entries)}
+      else
+        collect_participant_entries(
+          channel_id,
+          thread_ts,
+          transport_opts,
+          %{state | cursor: next_cursor, page_count: state.page_count + 1}
+        )
+      end
+    end
+  end
+
+  defp add_participant_entry(state, key, entry) do
+    %{
+      state
+      | seen: MapSet.put(state.seen, key),
+        entries: [entry | state.entries],
+        entry_count: state.entry_count + 1
+    }
+  end
+
+  defp participant_entry(message) when is_map(message) do
+    case map_get(message, [:user, "user"]) |> blank_to_nil() do
+      user_id when is_binary(user_id) ->
+        {{:user, user_id}, {:user, user_id}}
+
+      nil ->
+        case map_get(message, [:bot_id, "bot_id"]) |> blank_to_nil() do
+          bot_id when is_binary(bot_id) -> {{:bot, bot_id}, {:bot, bot_user_info(bot_id, message)}}
+          nil -> nil
+        end
+    end
+  end
+
+  defp participant_entry(_message), do: nil
+
+  defp participant_entries_to_users(entries, opts) do
+    transport_opts = pick_opts(opts, [:token, :transport, :req, :base_url])
+
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, users} ->
+      case user_from_entry(entry, transport_opts) do
+        {:ok, user} -> {:cont, {:ok, [user | users]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, users} -> {:ok, Enum.reverse(users)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp user_from_entry({:user, user_id}, transport_opts) do
+    get_user(user_id, transport_opts)
+  end
+
+  defp user_from_entry({:bot, user}, _transport_opts), do: {:ok, user}
+
+  defp bot_user_info(bot_id, message) do
+    profile = map_get(message, [:bot_profile, "bot_profile"]) || %{}
+    icons = map_get(profile, [:icons, "icons"]) || %{}
+
+    UserInfo.new(%{
+      id: bot_id,
+      username: map_get(message, [:username, "username"]) || map_get(profile, [:name, "name"]),
+      display_name: map_get(profile, [:name, "name"]),
+      avatar_url:
+        first_non_blank([
+          map_get(icons, [:image_512, "image_512"]),
+          map_get(icons, [:image_192, "image_192"]),
+          map_get(icons, [:image_72, "image_72"])
+        ]),
+      is_bot: true,
+      metadata: %{provider: :slack, bot_id: bot_id}
+    })
+  end
+
+  defp user_info(raw_user, fallback_id) do
+    raw_user = normalize_struct(raw_user)
+    profile = map_get(raw_user, [:profile, "profile"]) || %{}
+
+    UserInfo.new(%{
+      id: stringify(map_get(raw_user, [:id, "id"]) || fallback_id),
+      username: map_get(raw_user, [:name, "name"]),
+      display_name:
+        first_non_blank([
+          map_get(profile, [:display_name, "display_name"]),
+          map_get(profile, [:real_name, "real_name"]),
+          map_get(raw_user, [:real_name, "real_name"])
+        ]),
+      email: map_get(profile, [:email, "email"]),
+      avatar_url:
+        first_non_blank([
+          map_get(profile, [:image_original, "image_original"]),
+          map_get(profile, [:image_512, "image_512"]),
+          map_get(profile, [:image_192, "image_192"]),
+          map_get(profile, [:image_72, "image_72"])
+        ]),
+      is_bot:
+        map_get(raw_user, [:is_bot, "is_bot"]) ||
+          map_get(raw_user, [:is_app_user, "is_app_user"]) || false,
+      metadata:
+        %{
+          provider: :slack,
+          team_id: map_get(raw_user, [:team_id, "team_id"]),
+          deleted: map_get(raw_user, [:deleted, "deleted"]),
+          timezone: map_get(raw_user, [:tz, "tz"]),
+          is_admin: map_get(raw_user, [:is_admin, "is_admin"]),
+          is_owner: map_get(raw_user, [:is_owner, "is_owner"])
+        }
+        |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    })
+  end
+
+  defp require_thread_ts(nil), do: {:error, :missing_thread_ts}
+  defp require_thread_ts(thread_ts), do: {:ok, thread_ts}
+
+  defp bounded_positive_integer(nil, default, _maximum, _error), do: {:ok, default}
+
+  defp bounded_positive_integer(value, _default, maximum, _error)
+       when is_integer(value) and value > 0 and value <= maximum,
+       do: {:ok, value}
+
+  defp bounded_positive_integer(_value, _default, _maximum, error), do: {:error, error}
 
   defp ensure_channel_id(%{} = raw_message, channel_id) do
     if is_nil(map_get(raw_message, [:channel, "channel"])) do

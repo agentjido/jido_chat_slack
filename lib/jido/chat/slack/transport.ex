@@ -42,6 +42,20 @@ defmodule Jido.Chat.Slack.Transport do
               opts :: keyword()
             ) :: api_result()
 
+  @callback get_user(user_id :: String.t() | integer(), opts :: keyword()) :: api_result()
+
+  @callback get_permalink(
+              channel_id :: String.t() | integer(),
+              message_id :: String.t() | integer(),
+              opts :: keyword()
+            ) :: {:ok, String.t()} | {:error, term()}
+
+  @callback mark_as_read(
+              channel_id :: String.t() | integer(),
+              message_id :: String.t() | integer(),
+              opts :: keyword()
+            ) :: api_result()
+
   @callback download_file(url :: String.t(), opts :: keyword()) ::
               {:ok, binary()} | {:error, term()}
 
