@@ -363,7 +363,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     assert signed_url.filename == nil
 
     assert misleading.kind == :file
-    assert misleading.media_type == "application/pdf; charset=binary"
+    assert misleading.media_type == "application/pdf"
   end
 
   test "transform_incoming/1 preserves file share comments" do

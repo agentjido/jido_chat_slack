@@ -244,9 +244,6 @@ defmodule Jido.Chat.Slack.Adapter do
   end
 
   @impl true
-  def start_typing(_channel_id, _opts \\ []), do: {:error, :unsupported}
-
-  @impl true
   def fetch_metadata(channel_id, opts \\ []) do
     opts =
       opts |> pick_opts([:token, :transport, :req, :base_url, :include_num_members]) |> MetadataOptions.new()
