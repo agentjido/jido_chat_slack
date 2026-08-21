@@ -14,7 +14,9 @@ defmodule Jido.Chat.Slack.Adapter do
     Incoming,
     Media,
     Message,
+    MessageDeletedEvent,
     MessagePage,
+    MessageUpdatedEvent,
     ModalResult,
     Response,
     SlashCommandEvent,
@@ -731,27 +733,15 @@ defmodule Jido.Chat.Slack.Adapter do
 
     case normalize_event_type(map_get(event, [:type, "type"])) do
       :message ->
-        message_payload = extract_event_message(event, payload)
+        case map_get(event, [:subtype, "subtype"]) do
+          subtype when subtype in ["message_changed", :message_changed] ->
+            message_updated_envelope(event, payload, request)
 
-        if is_nil(message_payload) do
-          {:ok, :noop}
-        else
-          with {:ok, incoming} <- transform_incoming(message_payload) do
-            {:ok,
-             EventEnvelope.new(%{
-               adapter_name: :slack,
-               event_type: :message,
-               thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id),
-               channel_id: stringify(incoming.external_room_id),
-               message_id: stringify(incoming.external_message_id),
-               payload: incoming,
-               raw: payload,
-               metadata: %{
-                 event_id: map_get(payload, [:event_id, "event_id"]),
-                 path: request.path
-               }
-             })}
-          end
+          subtype when subtype in ["message_deleted", :message_deleted] ->
+            message_deleted_envelope(event, payload, request)
+
+          _ ->
+            message_created_envelope(event, payload, request)
         end
 
       :app_mention ->
@@ -777,6 +767,168 @@ defmodule Jido.Chat.Slack.Adapter do
 
       _ ->
         {:ok, :noop}
+    end
+  end
+
+  defp message_created_envelope(event, payload, request) do
+    with {:ok, incoming} <- transform_incoming(event) do
+      {:ok,
+       EventEnvelope.new(%{
+         adapter_name: :slack,
+         event_type: :message,
+         thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id),
+         channel_id: stringify(incoming.external_room_id),
+         message_id: stringify(incoming.external_message_id),
+         payload: incoming,
+         raw: payload,
+         metadata: %{
+           event_id: map_get(payload, [:event_id, "event_id"]),
+           path: request.path
+         }
+       })}
+    end
+  end
+
+  defp message_updated_envelope(event, payload, request) do
+    message = map_get(event, [:message, "message"])
+    previous_message = map_get(event, [:previous_message, "previous_message"])
+
+    if is_map(message) do
+      channel_id = lifecycle_channel_id(event, message)
+      message_context = inherit_lifecycle_context(message, event, previous_message)
+      timestamp = lifecycle_timestamp(event, message)
+
+      with {:ok, incoming} <- transform_incoming(message_context) do
+        author = incoming.author || lifecycle_author(previous_message)
+
+        normalized_message =
+          incoming
+          |> Message.from_incoming(adapter_name: :slack)
+          |> Map.put(:author, author)
+          |> Map.put(:raw, message)
+          |> Map.put(:updated_at, timestamp)
+
+        lifecycle_event =
+          MessageUpdatedEvent.new(%{
+            adapter_name: :slack,
+            thread_id: thread_id(channel_id, incoming.external_thread_id),
+            channel_id: stringify(channel_id),
+            message_id: stringify(incoming.external_message_id),
+            author: author,
+            timestamp: timestamp,
+            message: normalized_message,
+            metadata: lifecycle_metadata(payload, event, request),
+            raw: payload
+          })
+
+        {:ok, lifecycle_envelope(:message_updated, lifecycle_event)}
+      end
+    else
+      {:ok, :noop}
+    end
+  end
+
+  defp message_deleted_envelope(event, payload, request) do
+    previous_message = map_get(event, [:previous_message, "previous_message"])
+    channel_id = lifecycle_channel_id(event, previous_message)
+    external_thread_id = lifecycle_thread_id(previous_message)
+
+    lifecycle_event =
+      MessageDeletedEvent.new(%{
+        adapter_name: :slack,
+        thread_id: thread_id(channel_id, external_thread_id),
+        channel_id: stringify(channel_id),
+        message_id: deleted_message_id(event, previous_message),
+        author: lifecycle_author(previous_message),
+        timestamp: lifecycle_timestamp(event, previous_message),
+        message: nil,
+        metadata: lifecycle_metadata(payload, event, request),
+        raw: payload
+      })
+
+    {:ok, lifecycle_envelope(:message_deleted, lifecycle_event)}
+  end
+
+  defp lifecycle_envelope(event_type, lifecycle_event) do
+    EventEnvelope.new(%{
+      adapter_name: :slack,
+      event_type: event_type,
+      thread_id: lifecycle_event.thread_id,
+      channel_id: lifecycle_event.channel_id,
+      message_id: lifecycle_event.message_id,
+      payload: lifecycle_event,
+      raw: lifecycle_event.raw,
+      metadata: lifecycle_event.metadata
+    })
+  end
+
+  defp lifecycle_metadata(payload, event, request) do
+    %{
+      event_id: map_get(payload, [:event_id, "event_id"]),
+      path: request.path,
+      subtype: map_get(event, [:subtype, "subtype"]),
+      previous_message:
+        event
+        |> map_get([:previous_message, "previous_message"])
+    }
+  end
+
+  defp inherit_lifecycle_context(message, event, previous_message) do
+    message
+    |> put_if_missing(:channel, lifecycle_channel_id(event, message))
+    |> put_if_missing(
+      :thread_ts,
+      lifecycle_thread_id(previous_message)
+    )
+    |> put_if_missing(
+      :channel_type,
+      map_get(event, [:channel_type, "channel_type"])
+    )
+  end
+
+  defp lifecycle_channel_id(event, fallback) do
+    map_get(event, [:channel, "channel"]) ||
+      if(is_map(fallback), do: map_get(fallback, [:channel, "channel"]))
+  end
+
+  defp lifecycle_thread_id(message) when is_map(message), do: external_thread_id(message)
+  defp lifecycle_thread_id(_message), do: nil
+
+  defp lifecycle_author(message) when is_map(message) do
+    case message_user_id(message) do
+      nil ->
+        nil
+
+      user_id ->
+        Jido.Chat.Author.new(%{
+          user_id: stringify(user_id),
+          user_name: message_username(message) || stringify(user_id),
+          full_name: message_display_name(message)
+        })
+    end
+  end
+
+  defp lifecycle_author(_message), do: nil
+
+  defp lifecycle_timestamp(event, message) do
+    map_get(event, [:event_ts, "event_ts"]) ||
+      if(is_map(message), do: message |> map_get([:edited, "edited"]) |> maybe_get([:ts, "ts"])) ||
+      if(is_map(message), do: map_get(message, [:ts, "ts"]))
+  end
+
+  defp deleted_message_id(event, previous_message) do
+    stringify(
+      map_get(event, [:deleted_ts, "deleted_ts"]) ||
+        if(is_map(previous_message), do: map_get(previous_message, [:ts, "ts"])) ||
+        map_get(event, [:ts, "ts"])
+    )
+  end
+
+  defp put_if_missing(map, key, value) when is_map(map) and is_atom(key) do
+    if is_nil(value) or not is_nil(map_get(map, [key])) do
+      map
+    else
+      Map.put(map, Atom.to_string(key), value)
     end
   end
 
