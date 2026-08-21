@@ -19,6 +19,10 @@ defmodule Jido.Chat.Slack.Adapter do
     MessageSubject,
     MessageUpdatedEvent,
     ModalResult,
+    OptionsLoadError,
+    OptionsLoadEvent,
+    OptionsLoadResult,
+    PostPayload,
     Response,
     SlashCommandEvent,
     ThreadPage,
@@ -37,6 +41,7 @@ defmodule Jido.Chat.Slack.Adapter do
     MetadataOptions,
     ModalOptions,
     ReactionOptions,
+    Renderer,
     SocketModeWorker,
     SendOptions
   }
@@ -80,12 +85,24 @@ defmodule Jido.Chat.Slack.Adapter do
       list_threads: :native,
       open_thread: :native,
       post_channel_message: :fallback,
+      post_message: :native,
       stream: :fallback,
       open_modal: :native,
+      load_options: :native,
       webhook: :native,
       verify_webhook: :native,
       parse_event: :native,
-      format_webhook_response: :native
+      format_webhook_response: :native,
+      markdown: :native,
+      cards: :native,
+      card_charts: :fallback,
+      card_tables: :native,
+      link_action_ids: :native,
+      modals: :native,
+      modal_date_input: :native,
+      modal_number_input: :native,
+      external_select: :native,
+      options_load: :native
     }
 
   @impl true
@@ -190,6 +207,32 @@ defmodule Jido.Chat.Slack.Adapter do
          raw: result,
          metadata: %{message: map_get(result, [:message, "message"])}
        })}
+    end
+  end
+
+  @impl true
+  def post_message(channel_id, payload, opts \\ []) do
+    payload = PostPayload.new(payload)
+    uploads = PostPayload.upload_candidates(payload)
+
+    cond do
+      uploads == [] and payload.kind == :card ->
+        with {:ok, rendered} <- Renderer.card(payload.card) do
+          send_message(channel_id, rendered.text, Keyword.put(opts, :blocks, rendered.blocks))
+        end
+
+      uploads == [] ->
+        send_message(channel_id, PostPayload.display_text(payload) || "", opts)
+
+      match?([_single], uploads) ->
+        [upload] = uploads
+
+        file_opts = maybe_put_initial_comment(opts, PostPayload.display_text(payload))
+
+        send_file(channel_id, upload, file_opts)
+
+      true ->
+        {:error, :multiple_attachments_unsupported}
     end
   end
 
@@ -455,10 +498,11 @@ defmodule Jido.Chat.Slack.Adapter do
     if is_nil(opts.trigger_id) do
       {:error, :missing_trigger_id}
     else
-      with {:ok, result} <-
+      with {:ok, view_payload} <- Renderer.modal(payload),
+           {:ok, result} <-
              transport(opts).open_modal(
                opts.trigger_id,
-               payload,
+               view_payload,
                ModalOptions.transport_opts(opts)
              ) do
         view = map_get(result, [:view, "view"]) || %{}
@@ -479,6 +523,47 @@ defmodule Jido.Chat.Slack.Adapter do
            }
          })}
       end
+    end
+  end
+
+  @impl true
+  def load_options(%OptionsLoadEvent{} = event, opts \\ []) do
+    timeout_ms = opts[:timeout_ms] || event.timeout_ms || 3_000
+
+    with {:ok, loader} <- options_loader(opts),
+         {:ok, raw_result} <- run_options_loader(loader, event, opts, timeout_ms),
+         {:ok, result} <- normalize_options_result(raw_result),
+         {:ok, slack_response} <- Renderer.options_response(result) do
+      {:ok,
+       %{
+         result
+         | metadata:
+             result.metadata
+             |> Map.put(:slack_response, slack_response)
+             |> Map.put(:provider_limit, Renderer.option_limit())
+       }}
+    else
+      {:error, :timeout} ->
+        {:error, OptionsLoadError.timeout(timeout_ms)}
+
+      {:error, %OptionsLoadError{} = error} ->
+        {:error, error}
+
+      {:error, {:provider_limit, field, limit}} ->
+        {:error,
+         OptionsLoadError.new(%{
+           code: "provider_limit",
+           message: "Slack #{field} limit is #{limit}",
+           metadata: %{field: field, limit: limit}
+         })}
+
+      {:error, reason} ->
+        {:error,
+         OptionsLoadError.new(%{
+           code: "options_load_failed",
+           message: inspect(reason),
+           metadata: %{reason: reason}
+         })}
     end
   end
 
@@ -655,6 +740,15 @@ defmodule Jido.Chat.Slack.Adapter do
     WebhookResponse.error(400, %{error: "missing_raw_body"})
   end
 
+  def format_webhook_response({:error, %OptionsLoadError{} = error}, _opts) do
+    WebhookResponse.new(%{
+      status: 200,
+      headers: %{"content-type" => "application/json"},
+      body: %{"options" => []},
+      metadata: %{options_load_error: OptionsLoadError.to_map(error)}
+    })
+  end
+
   def format_webhook_response({:error, reason}, _opts) do
     WebhookResponse.error(400, %{error: inspect(reason)})
   end
@@ -746,6 +840,22 @@ defmodule Jido.Chat.Slack.Adapter do
        raw,
        :modal_close
      )}
+  end
+
+  defp incoming_from_event(%EventEnvelope{
+         event_type: :options_load,
+         payload: %OptionsLoadResult{} = result,
+         raw: raw
+       }) do
+    {:ok,
+     synthetic_incoming(
+       "slack",
+       nil,
+       nil,
+       raw,
+       :options_load
+     )
+     |> then(&%{&1 | metadata: Map.put(&1.metadata, :options_result, result)})}
   end
 
   defp incoming_from_event(%EventEnvelope{event_type: :reaction, raw: raw}) do
@@ -1056,6 +1166,9 @@ defmodule Jido.Chat.Slack.Adapter do
       "view_closed" ->
         {:ok, modal_close_envelope(payload)}
 
+      "block_suggestion" ->
+        {:ok, options_load_envelope(payload)}
+
       _ ->
         {:ok, :noop}
     end
@@ -1144,6 +1257,40 @@ defmodule Jido.Chat.Slack.Adapter do
           hash: map_get(view, [:hash, "hash"])
         }
       },
+      raw: payload,
+      metadata: %{}
+    })
+  end
+
+  defp options_load_envelope(payload) do
+    channel_id = map_get(payload, [:channel, "channel"]) |> maybe_get([:id, "id"])
+    view = map_get(payload, [:view, "view"]) || %{}
+    message = map_get(payload, [:message, "message"]) || %{}
+    message_id = map_get(message, [:ts, "ts"])
+    options_thread_id = options_thread_id(channel_id, message)
+
+    EventEnvelope.new(%{
+      adapter_name: :slack,
+      event_type: :options_load,
+      thread_id: options_thread_id,
+      channel_id: stringify(channel_id),
+      message_id: stringify(message_id),
+      payload:
+        OptionsLoadEvent.new(%{
+          adapter_name: :slack,
+          action_id: map_get(payload, [:action_id, "action_id"]),
+          query: map_get(payload, [:value, "value"]) || "",
+          limit: Renderer.option_limit(),
+          thread_id: options_thread_id,
+          channel_id: stringify(channel_id),
+          message_id: stringify(message_id),
+          view_id: stringify(map_get(view, [:id, "id"])),
+          user: author_from_user_payload(map_get(payload, [:user, "user"]) || %{}),
+          raw: payload,
+          metadata: %{
+            team_id: map_get(payload, [:team, "team"]) |> maybe_get([:id, "id"])
+          }
+        }),
       raw: payload,
       metadata: %{}
     })
@@ -1239,7 +1386,8 @@ defmodule Jido.Chat.Slack.Adapter do
       "shortcut",
       "message_action",
       "view_submission",
-      "view_closed"
+      "view_closed",
+      "block_suggestion"
     ]
   end
 
@@ -1956,6 +2104,97 @@ defmodule Jido.Chat.Slack.Adapter do
           map_get(payload, [:name, "name"])
     }
   end
+
+  defp options_loader(opts) do
+    case opts[:options_loader] || Application.get_env(:jido_chat_slack, :options_loader) do
+      loader when is_function(loader, 1) or is_function(loader, 2) ->
+        {:ok, loader}
+
+      {module, function, args} = loader
+      when is_atom(module) and is_atom(function) and is_list(args) ->
+        {:ok, loader}
+
+      nil ->
+        {:error,
+         OptionsLoadError.new(%{
+           code: "unsupported",
+           message: "No Slack options loader is configured"
+         })}
+
+      _other ->
+        {:error, :invalid_options_loader}
+    end
+  end
+
+  defp run_options_loader(loader, event, opts, timeout_ms) do
+    owner = self()
+    reference = make_ref()
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        send(owner, {reference, invoke_options_loader(loader, event, opts)})
+      end)
+
+    receive do
+      {^reference, result} ->
+        Process.demonitor(monitor, [:flush])
+        normalize_loader_return(result)
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:error, {:options_loader_exit, reason}}
+    after
+      timeout_ms ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+        end
+
+        receive do
+          {^reference, _late_result} -> :ok
+        after
+          0 -> :ok
+        end
+
+        {:error, :timeout}
+    end
+  end
+
+  defp invoke_options_loader(loader, event, _opts) when is_function(loader, 1),
+    do: loader.(event)
+
+  defp invoke_options_loader(loader, event, opts) when is_function(loader, 2),
+    do: loader.(event, opts)
+
+  defp invoke_options_loader({module, function, args}, event, _opts),
+    do: apply(module, function, args ++ [event])
+
+  defp normalize_loader_return({:ok, result}), do: {:ok, result}
+  defp normalize_loader_return({:error, reason}), do: {:error, reason}
+  defp normalize_loader_return(result) when is_map(result), do: {:ok, result}
+  defp normalize_loader_return(other), do: {:error, {:invalid_options_loader_result, other}}
+
+  defp normalize_options_result(%OptionsLoadResult{} = result), do: {:ok, result}
+
+  defp normalize_options_result(result) when is_map(result) do
+    try do
+      {:ok, OptionsLoadResult.new(result)}
+    rescue
+      error -> {:error, {:invalid_options, Exception.message(error)}}
+    end
+  end
+
+  defp normalize_options_result(other), do: {:error, {:invalid_options, other}}
+
+  defp options_thread_id(nil, _message), do: nil
+
+  defp options_thread_id(channel_id, message),
+    do: thread_id(channel_id, external_thread_id(message))
+
+  defp maybe_put_initial_comment(opts, nil), do: opts
+
+  defp maybe_put_initial_comment(opts, text),
+    do: Keyword.put_new(opts, :initial_comment, text)
 
   defp extract_action_value(action) when is_map(action) do
     map_get(action, [:value, "value"]) ||
