@@ -33,6 +33,12 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
     @impl true
     def fetch_message(_channel_id, _message_id, _opts), do: {:error, :unsupported}
     @impl true
+    def get_user(_user_id, _opts), do: {:error, :unsupported}
+    @impl true
+    def get_permalink(_channel_id, _message_id, _opts), do: {:error, :unsupported}
+    @impl true
+    def mark_as_read(_channel_id, _message_id, _opts), do: {:error, :unsupported}
+    @impl true
     def download_file(_url, _opts), do: {:error, :unsupported}
     @impl true
     def fetch_messages(_channel_id, _opts), do: {:error, :unsupported}
