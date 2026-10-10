@@ -15,6 +15,25 @@ jobs:
       elixir_version: "1.18.4"
       validate_hex_package: false
 
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.18.4"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Build HTML and Markdown documentation
+        run: mix docs -f html -f markdown
+
   test:
     name: Test
     uses: agentjido/github-actions/.github/workflows/elixir-test.yml@v3
