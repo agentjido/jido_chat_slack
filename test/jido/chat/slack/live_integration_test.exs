@@ -1,9 +1,8 @@
 defmodule Jido.Chat.Slack.LiveIntegrationTest do
   use ExUnit.Case, async: false
 
-  alias Jido.Chat.Adapter, as: ChatAdapter
+  alias Jido.Chat
   alias Jido.Chat.FileUpload
-  alias Jido.Chat.PostPayload
   alias Jido.Chat.Slack.Adapter
 
   @run_live System.get_env("RUN_LIVE_SLACK_TESTS") in ["1", "true", "TRUE", "yes", "on"]
@@ -31,23 +30,23 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
     text = "jido slack live #{System.system_time(:millisecond)}"
 
     assert {:ok, sent} = Adapter.send_message(ctx.channel_id, text, ctx.opts)
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent["id"]
     assert is_binary(message_id)
 
     assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, message_id, ctx.opts)
-    assert fetched.external_message_id == message_id
-    assert fetched.external_room_id == ctx.channel_id
+    assert fetched["id"] == message_id
+    assert fetched["room_id"] == ctx.channel_id
 
     assert {:ok, edited} =
              Adapter.edit_message(ctx.channel_id, message_id, text <> " (edited)", ctx.opts)
 
-    assert edited.external_message_id == message_id
+    assert edited["id"] == message_id
     assert :ok = Adapter.delete_message(ctx.channel_id, message_id, ctx.opts)
   end
 
   test "metadata lookup succeeds against live Slack API", ctx do
     assert {:ok, info} = Adapter.fetch_metadata(ctx.channel_id, ctx.opts)
-    assert info.id == ctx.channel_id
+    assert info["id"] == ctx.channel_id
   end
 
   test "stream fallback edits a visible draft and leaves the final content", ctx do
@@ -70,25 +69,32 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
         end)
       ])
 
-    assert {:ok, sent} =
-             ChatAdapter.stream(
-               Adapter,
-               ctx.channel_id,
-               chunk_stream,
-               Keyword.merge(ctx.opts,
-                 placeholder_text: "jido slack draft...",
-                 update_every: 1
-               )
-             )
+    {:ok, binding} =
+      Chat.bind(
+        Adapter,
+        Keyword.merge(ctx.opts, id: "live-stream", placeholder_text: "jido slack draft...", update_every: 1)
+      )
 
-    message_id = sent.external_message_id || sent.message_id
+    {:ok, ref} = Chat.put_resource(binding, "stream", chunk_stream)
+
+    request =
+      Jido.Chat.Signal.Stream.new!(%{
+        "request_id" => Chat.ID.generate!(),
+        "room_id" => ctx.channel_id,
+        "resource_ref" => ref
+      })
+
+    assert {:ok, result} = Chat.execute(binding, request)
+    sent = result.data["result"]
+
+    message_id = sent["id"]
     assert is_binary(message_id)
 
     Process.sleep(1_000)
 
     assert {:ok, fetched} = Adapter.fetch_message(ctx.channel_id, message_id, ctx.opts)
-    assert fetched.external_message_id == message_id
-    assert fetched.text == Enum.join(parts)
+    assert fetched["id"] == message_id
+    assert fetched["text"] == Enum.join(parts)
 
     assert :ok = Adapter.delete_message(ctx.channel_id, message_id, ctx.opts)
   end
@@ -98,7 +104,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
     reply_text = "jido slack reply child #{System.system_time(:millisecond)}"
 
     assert {:ok, root} = Adapter.send_message(ctx.channel_id, root_text, ctx.opts)
-    root_id = root.external_message_id || root.message_id
+    root_id = root["id"]
 
     on_exit(fn ->
       cleanup_delete(fn -> Adapter.delete_message(ctx.channel_id, root_id, ctx.opts) end)
@@ -111,7 +117,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
                Keyword.merge(ctx.opts, reply_to_id: root_id)
              )
 
-    reply_id = reply.external_message_id || reply.message_id
+    reply_id = reply["id"]
 
     on_exit(fn ->
       cleanup_delete(fn -> Adapter.delete_message(ctx.channel_id, reply_id, ctx.opts) end)
@@ -124,10 +130,10 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
                Keyword.merge(ctx.opts, thread_ts: root_id)
              )
 
-    assert fetched.external_message_id == reply_id
-    assert fetched.external_room_id == ctx.channel_id
-    assert fetched.thread_id == "slack:#{ctx.channel_id}:#{root_id}"
-    assert fetched.metadata.channel_meta.external_thread_id == root_id
+    assert fetched["id"] == reply_id
+    assert fetched["room_id"] == ctx.channel_id
+    assert fetched["thread_id"] == root_id
+    assert reply["thread_id"] == root_id
   end
 
   test "reaction flow succeeds against live Slack API", ctx do
@@ -138,7 +144,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
                ctx.opts
              )
 
-    message_id = sent.external_message_id || sent.message_id
+    message_id = sent["id"]
 
     on_exit(fn ->
       cleanup_delete(fn -> Adapter.delete_message(ctx.channel_id, message_id, ctx.opts) end)
@@ -168,7 +174,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
       })
 
     assert {:ok, path_response} = Adapter.send_file(ctx.channel_id, path_upload, ctx.opts)
-    path_message_id = path_response.external_message_id || path_response.message_id
+    path_message_id = path_response["id"]
     assert is_binary(path_message_id)
 
     on_exit(fn ->
@@ -184,7 +190,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
       })
 
     assert {:ok, bytes_response} = Adapter.send_file(ctx.channel_id, bytes_upload, ctx.opts)
-    bytes_message_id = bytes_response.external_message_id || bytes_response.message_id
+    bytes_message_id = bytes_response["id"]
     assert is_binary(bytes_message_id)
 
     on_exit(fn ->
@@ -193,21 +199,30 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
   end
 
   test "core post_message routes canonical single-file payloads through Slack send_file", ctx do
-    payload =
-      PostPayload.new(%{
-        text: "jido slack canonical file #{System.system_time(:millisecond)}",
-        files: [
-          %{
-            kind: :file,
-            data: "slack canonical bytes #{System.system_time(:millisecond)}\n",
-            filename: "slack-canonical.txt",
-            media_type: "text/plain"
-          }
-        ]
+    upload =
+      FileUpload.new(%{
+        kind: :file,
+        data: "slack canonical bytes #{System.system_time(:millisecond)}\n",
+        filename: "slack-canonical.txt",
+        media_type: "text/plain"
       })
 
-    assert {:ok, sent} = ChatAdapter.post_message(Adapter, ctx.channel_id, payload, ctx.opts)
-    message_id = sent.external_message_id || sent.message_id
+    {:ok, binding} = Chat.bind(Adapter, Keyword.put(ctx.opts, :id, "live-post"))
+    {:ok, ref} = Chat.put_resource(binding, "file", upload)
+
+    request =
+      Jido.Chat.Signal.PostMessage.new!(%{
+        "request_id" => Chat.ID.generate!(),
+        "room_id" => ctx.channel_id,
+        "content" => %{
+          "kind" => "media",
+          "resource_ref" => ref,
+          "caption" => "jido slack canonical file #{System.system_time(:millisecond)}"
+        }
+      })
+
+    assert {:ok, result} = Chat.execute(binding, request)
+    message_id = result.data["result"]["id"]
     assert is_binary(message_id)
 
     on_exit(fn ->
@@ -220,17 +235,25 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
       assert {:ok, dm_channel_id} = Adapter.open_dm(@user_id, ctx.opts)
       assert is_binary(dm_channel_id)
 
-      assert {:ok, ephemeral} =
-               Adapter.post_ephemeral(
-                 ctx.channel_id,
-                 @user_id,
-                 "jido slack ephemeral #{System.system_time(:millisecond)}",
-                 ctx.opts
-               )
+      {:ok, binding} = Chat.bind(Adapter, Keyword.put(ctx.opts, :id, "live-ephemeral"))
 
-      assert ephemeral.used_fallback == false
-      assert ephemeral.metadata.channel_id == ctx.channel_id
-      assert ephemeral.metadata.user_id == @user_id
+      request =
+        Jido.Chat.Signal.PostEphemeral.new!(%{
+          "request_id" => Chat.ID.generate!(),
+          "room_id" => ctx.channel_id,
+          "user_id" => @user_id,
+          "text" => "jido slack ephemeral #{System.system_time(:millisecond)}",
+          "fallback_to_dm" => false
+        })
+
+      assert Adapter.capabilities().post_ephemeral == :native
+      assert {:ok, result} = Chat.execute(binding, request)
+      assert result.type == "jido.chat.operation.completed"
+      ephemeral = result.data["result"]
+
+      assert is_binary(ephemeral["id"])
+      assert ephemeral["room_id"] == ctx.channel_id
+      assert ephemeral["text"] =~ "jido slack ephemeral"
     end
   else
     test "open_dm and post_ephemeral live tests require SLACK_TEST_USER_ID" do
