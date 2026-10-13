@@ -88,14 +88,17 @@ defmodule Jido.Chat.Slack.InteractionResponse do
   defp response_from_result({:ok, {:reply, response}}), do: response
 
   defp response_from_result({:ok, %Jido.Signal{type: "jido.chat.operation.completed", data: data}}) do
-    case data["result"] do
-      %{"options" => options, "option_groups" => groups} ->
-        if groups == [], do: %{"options" => options}, else: %{"option_groups" => groups}
-
-      _ ->
-        nil
+    if data["operation"] == "load_options" do
+      case Jido.Chat.Slack.Renderer.options_response(data["result"]) do
+        {:ok, response} -> response
+        _ -> %{"options" => []}
+      end
     end
   end
+
+  defp response_from_result(
+         {:ok, %Jido.Signal{type: "jido.chat.operation.failed", data: %{"operation" => "load_options"}}}
+       ), do: %{"options" => []}
 
   defp response_from_result(_result), do: nil
 

@@ -1,8 +1,8 @@
 defmodule Jido.Chat.Slack.CardsModalsTest do
   use ExUnit.Case, async: true
 
-  alias Jido.Chat.{Card, EventEnvelope, Modal, OptionsLoadError, OptionsLoadEvent}
-  alias Jido.Chat.Adapter, as: ChatAdapter
+  alias Jido.Chat.{Card, Modal}
+  alias Jido.Chat.Slack.Adapter
   alias Jido.Chat.Slack.Renderer
 
   defmodule MockTransport do
@@ -93,13 +93,18 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
         components: [Card.actions([Card.link_button("Runbook", "https://example.test", "runbook")])]
       })
 
-    assert {:ok, _response} =
-             ChatAdapter.post_message(
-               Jido.Chat.Slack.Adapter,
-               "C123",
-               Jido.Chat.PostPayload.new(%{kind: :card, card: card}),
-               transport: MockTransport
-             )
+    {:ok, binding} = Jido.Chat.bind(Adapter, id: "cards", token: "fixture-token", transport: MockTransport)
+    {:ok, ref} = Jido.Chat.put_resource(binding, "card", card)
+
+    request_signal =
+      Jido.Chat.Signal.PostMessage.new!(%{
+        "request_id" => "card",
+        "room_id" => "C123",
+        "content" => %{"kind" => "card", "resource_ref" => ref}
+      })
+
+    assert {:ok, result} = Jido.Chat.execute(binding, request_signal)
+    assert result.type == "jido.chat.operation.completed"
 
     assert_received {:send_message, "C123", text, opts}
     assert text =~ "Runbook"
@@ -121,10 +126,9 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
         }
       })
 
-    assert {:ok, %EventEnvelope{payload: action}} =
-             Jido.Chat.Slack.Adapter.parse_event(request, [])
-
-    assert action.action_id == "runbook"
+    assert {:ok, %{signals: [action]}} = Jido.Chat.normalize_event(binding, request)
+    assert action.type == "jido.chat.action.received"
+    assert action.data["action_id"] == "runbook"
   end
 
   test "provider table limits fail explicitly" do
@@ -164,13 +168,14 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
         ]
       })
 
-    assert {:ok, result} =
-             ChatAdapter.open_modal(Jido.Chat.Slack.Adapter, "C123", modal,
-               transport: MockTransport,
-               trigger_id: "1337.42"
-             )
+    {:ok, binding} =
+      Jido.Chat.bind(Adapter, id: "modal", token: "fixture-token", transport: MockTransport, trigger_id: "1337.42")
 
-    assert result.id == "slack:modal:V123"
+    {:ok, ref} = Jido.Chat.put_resource(binding, "modal", modal)
+    request = Jido.Chat.Signal.OpenModal.new!(%{"request_id" => "modal", "room_id" => "C123", "modal" => ref})
+    assert {:ok, result} = Jido.Chat.execute(binding, request)
+    assert result.data["result"]["id"] == "V123"
+
     assert_received {:open_modal, "1337.42", view}
 
     assert [date, number, external] = view["blocks"]
@@ -276,103 +281,109 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
   end
 
   test "block suggestions normalize and option loaders enforce Slack limits" do
-    request =
-      Jido.Chat.WebhookRequest.new(%{
-        adapter_name: :slack,
-        payload: %{
-          "type" => "block_suggestion",
-          "action_id" => "owner",
-          "value" => "ad",
-          "user" => %{"id" => "U123", "username" => "ada"},
-          "view" => %{"id" => "V123"}
-        }
-      })
+    loader = fn %Jido.Signal{data: %{"query" => "ad"}} -> {:ok, %{options: [%{label: "Ada", value: "user:ada"}]}} end
 
-    assert {:ok, %EventEnvelope{event_type: :options_load, payload: %OptionsLoadEvent{} = event}} =
-             Jido.Chat.Slack.Adapter.parse_event(request, [])
-
-    assert event.action_id == "owner"
-    assert event.query == "ad"
-    assert event.view_id == "V123"
-    assert event.thread_id == nil
-
-    loader = fn %OptionsLoadEvent{query: "ad"} ->
-      {:ok, %{options: [%{label: "Ada", value: "user:ada"}]}}
-    end
-
-    assert {:ok, result} = Jido.Chat.Slack.Adapter.load_options(event, options_loader: loader)
-    assert result.metadata.slack_response["options"] |> hd() |> get_in(["text", "text"]) == "Ada"
-
-    too_many = fn _event ->
-      {:ok,
-       %{
-         options: Enum.map(1..101, fn index -> %{label: "Option #{index}", value: "#{index}"} end)
-       }}
-    end
-
-    assert {:error, %OptionsLoadError{code: "provider_limit"}} =
-             Jido.Chat.Slack.Adapter.load_options(event, options_loader: too_many)
-  end
-
-  test "options-load webhook replies use Slack's response shape" do
-    chat = Jido.Chat.new(adapters: %{slack: Jido.Chat.Slack.Adapter})
+    {:ok, binding} =
+      Jido.Chat.bind(Adapter, id: "options", token: "fixture-token", transport: MockTransport, options_loader: loader)
 
     payload = %{
       "type" => "block_suggestion",
+      "channel" => %{"id" => "C123"},
+      "action_id" => "owner",
+      "value" => "ad",
+      "user" => %{"id" => "U123"},
+      "view" => %{"id" => "V123"}
+    }
+
+    assert {:ok, %{signals: [event]}} = Jido.Chat.normalize_event(binding, payload)
+    assert event.type == "jido.chat.options.requested"
+    assert event.data["action_id"] == "owner"
+    assert event.data["query"] == "ad"
+    assert event.data["view_id"] == "V123"
+    assert event.data["thread_id"] == nil
+
+    query =
+      Jido.Chat.Signal.LoadOptions.new!(%{
+        "request_id" => "options",
+        "interaction_id" => event.data["interaction_id"],
+        "query" => event.data["query"]
+      })
+
+    assert {:ok, result} = Jido.Chat.execute(binding, query)
+    assert {:ok, response} = Renderer.options_response(result.data["result"])
+    assert hd(response["options"])["text"]["text"] == "Ada"
+    too_many = fn _ -> {:ok, %{options: Enum.map(1..101, &%{label: "Option #{&1}", value: "#{&1}"})}} end
+    {:ok, rejected_binding} = Jido.Chat.bind(Adapter, id: "too-many", token: "fixture-token", options_loader: too_many)
+
+    assert {:ok, failed} =
+             Jido.Chat.execute(rejected_binding, %{query | data: Map.put(query.data, "request_id", "too-many")})
+
+    assert failed.type == "jido.chat.operation.failed"
+    assert failed.data["code"] == "provider_failure"
+    assert {:error, {:provider_limit, :options, 100}} = Renderer.options_response(elem(too_many.(query), 1))
+  end
+
+  test "options-load webhook replies use Slack's response shape" do
+    loader = fn _ -> {:ok, %{options: [%{label: "Ada", value: "user:ada"}]}} end
+    {:ok, binding} = Jido.Chat.bind(Adapter, id: "webhook-options", token: "fixture-token", options_loader: loader)
+
+    payload = %{
+      "type" => "block_suggestion",
+      "channel" => %{"id" => "C123"},
       "action_id" => "owner",
       "value" => "ad",
       "user" => %{"id" => "U123"}
     }
 
-    loader = fn _event ->
-      {:ok, %{options: [%{label: "Ada", value: "user:ada"}]}}
-    end
+    assert {:ok, %{signals: [event]}} = Jido.Chat.normalize_event(binding, payload)
 
-    assert {:ok, ^chat, %EventEnvelope{event_type: :options_load}, response} =
-             Jido.Chat.WebhookPipeline.handle_request(
-               chat,
-               :slack,
-               payload,
-               [options_loader: loader],
-               &Jido.Chat.get_adapter/2,
-               &Jido.Chat.process_event/4
-             )
+    query =
+      Jido.Chat.Signal.LoadOptions.new!(%{
+        "request_id" => "options",
+        "interaction_id" => event.data["interaction_id"],
+        "query" => "ad"
+      })
 
+    assert {:ok, result} = Jido.Chat.execute(binding, query)
+    response = Adapter.format_webhook_response({:ok, result}, binding.options)
     assert response.status == 200
 
     assert response.body == %{
              "options" => [
-               %{
-                 "text" => %{"type" => "plain_text", "text" => "Ada", "emoji" => true},
-                 "value" => "user:ada"
-               }
+               %{"text" => %{"type" => "plain_text", "text" => "Ada", "emoji" => true}, "value" => "user:ada"}
              ]
            }
   end
 
   test "option loader timeouts stay typed at the core boundary" do
-    event = OptionsLoadEvent.new(%{action_id: "owner", query: "ad", timeout_ms: 25})
+    owner = self()
 
-    assert {:error, %OptionsLoadError{kind: :timeout, timeout_ms: 25}} =
-             ChatAdapter.load_options(Jido.Chat.Slack.Adapter, event,
-               options_loader: fn _event -> {:error, :timeout} end
-             )
+    for {id, loader, deadline} <- [
+          {"returned", fn _ -> {:error, :timeout} end, 25},
+          {"deadline",
+           fn _ ->
+             send(owner, {:loader_started, self()})
 
-    assert {:error, %OptionsLoadError{kind: :timeout, timeout_ms: 5}} =
-             ChatAdapter.load_options(Jido.Chat.Slack.Adapter, event,
-               timeout_ms: 5,
-               options_loader: fn _event ->
-                 Process.sleep(50)
-                 {:ok, %{options: []}}
-               end
-             )
+             receive do
+               :release -> {:ok, %{options: []}}
+             end
+           end, 5}
+        ] do
+      {:ok, binding} =
+        Jido.Chat.bind(Adapter, id: id, token: "fixture-token", options_loader: loader, timeout_ms: deadline)
 
-    error = OptionsLoadError.timeout(25)
-    response = Jido.Chat.Slack.Adapter.format_webhook_response({:error, error}, [])
+      query = Jido.Chat.Signal.LoadOptions.new!(%{"request_id" => id, "interaction_id" => "opaque", "query" => "ad"})
+      assert {:ok, failed} = Jido.Chat.execute(binding, query)
+      assert failed.type == "jido.chat.operation.failed"
+      assert failed.data["code"] == "provider_failure"
+      assert failed.data["retryable"]
+      response = Adapter.format_webhook_response({:ok, failed}, binding.options)
+      assert response.status == 200
+      assert response.body == %{"options" => []}
+    end
 
-    assert response.status == 200
-    assert response.body == %{"options" => []}
-    assert response.metadata.options_load_error["kind"] == :timeout
+    assert_receive {:loader_started, child}
+    refute Process.alive?(child)
   end
 
   test "capabilities declare native inputs and explicit chart fallback" do
