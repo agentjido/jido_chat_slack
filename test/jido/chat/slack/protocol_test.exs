@@ -160,4 +160,65 @@ defmodule Jido.Chat.Slack.ProtocolTest do
 
     assert result.data["result"]["options"] == [%{"label" => "One", "value" => "1"}]
   end
+
+  test "the same provider view ID retains separate binding and conversation scopes", %{binding: first} do
+    {:ok, second} = Jido.Chat.bind(Adapter, id: "other-protocol", token: "other-token", transport: Transport)
+
+    for {binding, room} <- [{first, "C1"}, {second, "C2"}] do
+      {:ok, %{signals: [action]}} =
+        Jido.Chat.normalize_event(binding, %{
+          "type" => "block_actions",
+          "container" => %{"channel_id" => room},
+          "trigger_id" => "private-trigger",
+          "actions" => [%{"action_id" => "open"}]
+        })
+
+      assert {:ok, controls} = Normalizer.interaction(binding, action.data["interaction_id"])
+      assert controls["room_id"] == room
+      {:ok, modal} = Adapter.prepare_modal(binding, action.data["interaction_id"], %{title: "Modal"})
+      execute(binding, Jido.Chat.Signal.OpenModal, %{"room_id" => room, "modal" => modal})
+      assert_receive {:provider, :modal, "private-trigger", _, _}
+      refute_received {:provider, :modal, _, _, _}
+    end
+
+    for {binding, room} <- [{first, "C1"}, {second, "C2"}], type <- ["view_submission", "view_closed"] do
+      assert {:ok, %{signals: [fact]}} =
+               Jido.Chat.normalize_event(binding, %{"type" => type, "view" => %{"id" => "V1"}})
+
+      assert fact.data["room_id"] == room
+      assert fact.subject == Jido.Chat.Signal.Identity.conversation_subject(binding.id, room)
+      assert {:ok, controls} = Normalizer.interaction(binding, fact.data["interaction_id"])
+      assert controls["room_id"] == room
+    end
+  end
+
+  test "cancelled and expired prepared modals make zero provider calls", %{binding: binding} do
+    for status <- [:cancelled, :expired] do
+      {:ok, %{signals: [action]}} =
+        Jido.Chat.normalize_event(binding, %{
+          "type" => "block_actions",
+          "channel" => %{"id" => "C1"},
+          "trigger_id" => "private-trigger",
+          "actions" => [%{"action_id" => to_string(status)}]
+        })
+
+      {:ok, modal} = Adapter.prepare_modal(binding, action.data["interaction_id"], %{title: "Modal"})
+
+      if status == :cancelled do
+        :ok = Jido.Chat.cancel_resource(binding, modal)
+      else
+        [{key, owner, kind, value, _, state}] = :ets.lookup(binding.resources, {:resource, modal["id"]})
+        :ets.insert(binding.resources, {key, owner, kind, value, System.monotonic_time(:millisecond) - 1, state})
+      end
+
+      parent =
+        Jido.Chat.Signal.OpenModal.new!(%{"request_id" => to_string(status), "room_id" => "C1", "modal" => modal})
+
+      assert {:ok, result} = Jido.Chat.execute(binding, parent)
+      assert result.type == "jido.chat.operation.failed"
+      assert result.data["code"] == if(status == :cancelled, do: "resource_cancelled", else: "resource_expired")
+      assert {:ok, ^result} = Jido.Chat.execute(binding, parent)
+      refute_received {:provider, :modal, _, _, _}
+    end
+  end
 end

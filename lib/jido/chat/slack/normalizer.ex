@@ -109,6 +109,11 @@ defmodule Jido.Chat.Slack.Normalizer do
 
     case result do
       {:ok, facts} ->
+        if Enum.all?(List.wrap(facts), &(&1.type == "jido.chat.normalization.failed")) do
+          refs = Process.get(context.tracker) -- existing
+          Enum.each(refs, &Resources.cancel(context.binding, &1))
+        end
+
         {:ok, List.wrap(facts)}
 
       {:error, %Jido.Chat.Errors.Contract{code: code}} = error when code in @limits ->
@@ -232,7 +237,7 @@ defmodule Jido.Chat.Slack.Normalizer do
   end
 
   defp slash(context, payload) do
-    with {:ok, interaction} <- capture_interaction(context, payload) do
+    with {:ok, interaction} <- capture_interaction(context, payload, field(payload, "channel_id")) do
       data = %{
         "room_id" => field(payload, "channel_id"),
         "interaction_id" => interaction,
@@ -254,7 +259,7 @@ defmodule Jido.Chat.Slack.Normalizer do
     room = room || private_room(field(view, "private_metadata")) || view_room(context.binding, field(view, "id"))
     actor = field(payload, "user") |> field("id")
 
-    with {:ok, interaction} <- capture_interaction(context, payload) do
+    with {:ok, interaction} <- capture_interaction(context, payload, room) do
       case type do
         "view_submission" ->
           build(context, ModalSubmitted, type, %{
@@ -320,10 +325,10 @@ defmodule Jido.Chat.Slack.Normalizer do
     end
   end
 
-  defp capture_interaction(context, payload) do
+  defp capture_interaction(context, payload, room) do
     id = "slack:interaction:" <> digest({context.binding.id, canonical(payload)})
     private = select(payload, ~w(trigger_id response_url))
-    private = Map.put(private, "room_id", field(payload, "channel_id") || field(payload, "channel") |> field("id"))
+    private = Map.put(private, "room_id", room)
 
     with {:ok, ref} <- Resources.put(context.binding, "result", private, []) do
       Process.put(context.tracker, [ref | Process.get(context.tracker)])
