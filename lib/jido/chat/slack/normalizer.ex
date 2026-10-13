@@ -79,7 +79,7 @@ defmodule Jido.Chat.Slack.Normalizer do
   defp decode(_input), do: throw(:invalid_payload)
 
   defp map_payload(context, payload) do
-    type = field(payload, "type")
+    type = protocol_type(field(payload, "type"))
     event = field(payload, "event")
     existing = Process.get(context.tracker)
 
@@ -125,7 +125,7 @@ defmodule Jido.Chat.Slack.Normalizer do
   end
 
   defp map_event(context, event) do
-    case field(event, "type") do
+    case protocol_type(field(event, "type")) do
       type when type in ["message", "app_mention"] -> message(context, event, type == "app_mention")
       "reaction_added" -> reaction(context, event, ReactionAdded)
       "reaction_removed" -> reaction(context, event, ReactionRemoved)
@@ -138,7 +138,7 @@ defmodule Jido.Chat.Slack.Normalizer do
   end
 
   defp message(context, event, mentioned) do
-    case field(event, "subtype") do
+    case protocol_type(field(event, "subtype")) do
       "message_deleted" ->
         old = field(event, "previous_message") || %{}
 
@@ -160,9 +160,9 @@ defmodule Jido.Chat.Slack.Normalizer do
           "room_id" => room,
           "message_id" => field(current, "ts") || field(previous, "ts"),
           "text" => message_text(current),
-          "sender" => actor(current, context.binding),
+          "sender" => lifecycle_actor(current, previous, context.binding),
           "thread_id" => field(current, "thread_ts") || field(previous, "thread_ts"),
-          "timestamp" => field(current, "edited") |> field("ts")
+          "timestamp" => field(current, "edited") |> field("ts") || field(event, "event_ts") || field(event, "ts")
         }
 
         with {:ok, media} <- media(context, current),
@@ -421,7 +421,8 @@ defmodule Jido.Chat.Slack.Normalizer do
 
   defp actor(message, binding) do
     profile = field(message, "user_profile") || field(message, "bot_profile") || %{}
-    id = field(message, "user") || field(message, "bot_id") || field(profile, "id")
+    bot = field(message, "bot_id")
+    id = field(message, "user") || if(is_binary(bot), do: "bot:" <> bot, else: field(profile, "id"))
 
     %{
       "id" => id,
@@ -432,6 +433,14 @@ defmodule Jido.Chat.Slack.Normalizer do
     }
     |> present()
   end
+
+  defp lifecycle_actor(current, previous, binding) do
+    selected = actor(current, binding)
+    if is_binary(selected["id"]), do: selected, else: actor(previous, binding)
+  end
+
+  defp protocol_type(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
+  defp protocol_type(value), do: value
 
   defp message_text(message) do
     field(message, "text") || field(message, "initial_comment") |> field("comment") || ""
@@ -477,6 +486,7 @@ defmodule Jido.Chat.Slack.Normalizer do
 
   defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
   defp canonical(value) when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value), do: value
+  defp canonical(value) when is_atom(value), do: Atom.to_string(value)
   defp canonical(_value), do: throw(:invalid_provider_input)
   defp field(%_{} = value, key), do: field(Map.from_struct(value), key)
 
