@@ -329,8 +329,13 @@ defmodule Jido.Chat.Slack.Adapter do
     thread_ts =
       opts[:thread_id] || opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id]
 
-    with {:ok, channel} <- transport(transport_opts).fetch_metadata(channel_id, transport_opts) do
-      build_subject(channel_id, thread_ts, channel, transport_opts)
+    with {:ok, channel} <- transport(transport_opts).fetch_metadata(channel_id, transport_opts),
+         {:ok, subject} <- build_subject(channel_id, thread_ts, channel, transport_opts) do
+      {:ok,
+       subject
+       |> Map.from_struct()
+       |> Map.put(:kind, if(thread_ts, do: "thread", else: "conversation"))
+       |> Map.put(:room_id, stringify(channel_id))}
     end
   end
 

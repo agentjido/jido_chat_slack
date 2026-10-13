@@ -4,7 +4,6 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   alias Jido.Chat
   alias Jido.Chat.{FileUpload, Handlers, Resources}
   alias Jido.Chat.Media
-  alias Jido.Chat.MessageSubject
   alias Jido.Chat.UserInfo
   alias Jido.Chat.Slack.Adapter
 
@@ -424,7 +423,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
 
   test "fetch_subject/2 returns channel and thread subjects" do
     assert {:ok,
-            %MessageSubject{
+            %{
               type: "slack_channel",
               id: "C123",
               title: "Release coordination",
@@ -432,7 +431,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
             }} = Adapter.fetch_subject("C123", transport: MockTransport)
 
     assert {:ok,
-            %MessageSubject{
+            %{
               type: "slack_thread",
               id: "1706745600.000100",
               title: "single",
