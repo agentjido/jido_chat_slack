@@ -152,7 +152,10 @@ defmodule Jido.Chat.Slack.MessageLifecycleEventTest do
       Handlers.on(
         handlers,
         Jido.Chat.Signal.MessageReceived,
-        fn incoming -> send(self(), {:new_message, incoming.data["message_id"]}) end, mode: :message, pattern: ~r/.*/)
+        fn incoming -> send(self(), {:new_message, incoming.data["message_id"]}) end,
+        mode: :message,
+        pattern: ~r/.*/
+      )
 
     {:ok, handlers} =
       Handlers.on(handlers, Jido.Chat.Signal.MessageUpdated, fn event ->

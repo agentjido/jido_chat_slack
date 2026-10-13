@@ -98,7 +98,8 @@ defmodule Jido.Chat.Slack.InteractionResponse do
 
   defp response_from_result(
          {:ok, %Jido.Signal{type: "jido.chat.operation.failed", data: %{"operation" => "load_options"}}}
-       ), do: %{"options" => []}
+       ),
+       do: %{"options" => []}
 
   defp response_from_result(_result), do: nil
 
