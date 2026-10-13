@@ -268,6 +268,7 @@ defmodule Jido.Chat.Slack.Adapter do
        %{
          "id" => stringify(map_get(result, [:id, "id"]) || channel_id),
          "name" => map_get(result, [:name, "name"]),
+         "member_count" => map_get(result, [:num_members, "num_members"]),
          "kind" => if(conversation_is_dm?(result, channel_id), do: "direct", else: "channel")
        }
        |> compact()}
@@ -646,6 +647,8 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp media_url(url) when is_binary(url) and url != "", do: {:ok, url}
   defp media_url(%Media{url: url}) when is_binary(url) and url != "", do: {:ok, url}
+  defp media_url(%{url: url}) when is_binary(url) and url != "", do: {:ok, url}
+  defp media_url(%{"url" => url}) when is_binary(url) and url != "", do: {:ok, url}
   defp media_url(_reference), do: {:error, :invalid_media_reference}
 
   defp message_text(message) do
@@ -1003,7 +1006,14 @@ defmodule Jido.Chat.Slack.Adapter do
       "room_id" => stringify(channel_id),
       "timestamp" => timestamp,
       "status" => "sent",
-      "text" => upload.metadata[:caption] || upload.metadata["caption"]
+      "text" => upload.metadata[:caption] || upload.metadata["caption"],
+      "metadata" => %{
+        file_id: map_get(file, [:id, "id"]),
+        filename: map_get(file, [:name, "name"]),
+        content_type: map_get(file, [:mimetype, "mimetype"]),
+        upload_kind: upload.kind,
+        delivered_kind: upload.kind
+      }
     }
     |> compact()
   end

@@ -391,17 +391,21 @@ defmodule Jido.Chat.Slack.Normalizer do
 
   defp media(context, message) do
     Enum.reduce_while(field(message, "files") || [], {:ok, []}, fn file, {:ok, acc} ->
-      url = field(file, "url_private_download") || field(file, "url_private") || field(file, "permalink")
-      mime = field(file, "mimetype")
-      kind = media_kind(mime, field(file, "filetype"))
-      private = %{url: url, provider: canonical(file)}
+      url =
+        non_blank(field(file, "url_private_download")) || non_blank(field(file, "url_private")) ||
+          non_blank(field(file, "permalink"))
+
+      mime = normalized_mime(field(file, "mimetype"))
+      filename = non_blank(field(file, "name")) || non_blank(field(file, "title"))
+      kind = media_kind(mime, field(file, "filetype"), filename, url)
+      private = %{url: url, kind: private_kind(kind), filename: filename, media_type: mime, provider: canonical(file)}
 
       with true <- is_binary(url) and url != "", {:ok, ref} <- Resources.put(context.binding, "media", private, []) do
         Process.put(context.tracker, [ref | Process.get(context.tracker)])
 
         value =
           %{"kind" => kind, "resource_ref" => ref}
-          |> optional("name", field(file, "name") || field(file, "title"))
+          |> optional("name", filename)
           |> optional("media_type", mime)
 
         {:cont, {:ok, acc ++ [value]}}
@@ -411,13 +415,45 @@ defmodule Jido.Chat.Slack.Normalizer do
     end)
   end
 
-  defp media_kind("image/" <> _, _), do: "image"
-  defp media_kind("audio/" <> _, _), do: "audio"
-  defp media_kind("video/" <> _, _), do: "video"
-  defp media_kind(_mime, type) when type in ~w(png jpg jpeg gif webp svg), do: "image"
-  defp media_kind(_mime, type) when type in ~w(mp3 ogg wav m4a), do: "audio"
-  defp media_kind(_mime, type) when type in ~w(mp4 mov webm), do: "video"
-  defp media_kind(_, _), do: "file"
+  defp media_kind("image/" <> _, _, _, _), do: "image"
+  defp media_kind("audio/" <> _, _, _, _), do: "audio"
+  defp media_kind("video/" <> _, _, _, _), do: "video"
+  defp media_kind(mime, _, _, _) when is_binary(mime), do: "file"
+
+  defp media_kind(_, type, filename, url) do
+    reference = filename || if(is_binary(url), do: URI.parse(url).path) || ""
+    extension = Path.extname(reference) |> String.trim_leading(".") |> String.downcase()
+    type = if is_binary(type), do: String.downcase(type), else: extension
+    type = if type in ["", "unknown"], do: extension, else: type
+
+    cond do
+      type in ~w(avif bmp gif heic heif jpeg jpg png svg tif tiff webp) -> "image"
+      type in ~w(aac flac m4a mp3 ogg wav) -> "audio"
+      type in ~w(avi m4v mkv mov mp4 webm) -> "video"
+      true -> "file"
+    end
+  end
+
+  defp private_kind("image"), do: :image
+  defp private_kind("audio"), do: :audio
+  defp private_kind("video"), do: :video
+  defp private_kind("file"), do: :file
+
+  defp non_blank(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      value -> value
+    end
+  end
+
+  defp non_blank(_), do: nil
+
+  defp normalized_mime(value) do
+    case non_blank(value) do
+      nil -> nil
+      value -> value |> String.split(";", parts: 2) |> hd() |> String.trim() |> String.downcase()
+    end
+  end
 
   defp actor(message, binding) do
     profile = field(message, "user_profile") || field(message, "bot_profile") || %{}
@@ -443,7 +479,13 @@ defmodule Jido.Chat.Slack.Normalizer do
   defp protocol_type(value), do: value
 
   defp message_text(message) do
-    field(message, "text") || field(message, "initial_comment") |> field("comment") || ""
+    text = field(message, "text")
+
+    comment =
+      field(message, "initial_comment") |> field("comment") ||
+        Enum.find_value(field(message, "files") || [], &(field(&1, "initial_comment") |> field("comment")))
+
+    if is_binary(non_blank(text)), do: text, else: comment || ""
   end
 
   defp mentions(text) when is_binary(text), do: Regex.scan(~r/<@([^>]+)>/, text) |> Enum.map(&Enum.at(&1, 1))
