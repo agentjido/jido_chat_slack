@@ -57,7 +57,7 @@ defmodule Jido.Chat.Slack.MixProject do
 
   defp deps do
     [
-      {:jido_chat, "~> 1.2 and >= 1.2.1"},
+      chat_dependency(),
       {:req, "~> 0.5"},
       {:websockex, "~> 0.5.1"},
       {:jason, "~> 1.4"},
@@ -70,6 +70,16 @@ defmodule Jido.Chat.Slack.MixProject do
       {:git_hooks, "~> 0.8", only: [:dev, :test], runtime: false},
       {:git_ops, "~> 2.9", only: :dev, runtime: false}
     ]
+  end
+
+  defp chat_dependency do
+    case {Mix.env(), System.get_env("JIDO_CHAT_PATH")} do
+      {env, path} when env in [:dev, :test] and is_binary(path) and path != "" ->
+        {:jido_chat, path: Path.expand(path), override: true}
+
+      _ ->
+        {:jido_chat, "~> 2.0"}
+    end
   end
 
   defp aliases do

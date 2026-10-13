@@ -3,7 +3,7 @@ defmodule Jido.Chat.Slack.InteractionResponse do
   Normalizes Slack webhook responses and Socket Mode acknowledgements.
   """
 
-  alias Jido.Chat.{EventEnvelope, WebhookResponse}
+  alias Jido.Chat.WebhookResponse
 
   @doc "Builds an optional webhook response from adapter or runtime results."
   @spec webhook_response(term(), keyword()) :: WebhookResponse.t() | nil
@@ -80,54 +80,24 @@ defmodule Jido.Chat.Slack.InteractionResponse do
 
   defp call_builder(_builder, _context, _opts), do: nil
 
-  defp default_response_value(%{mode: :webhook, result: {:ok, chat, event}}) do
-    response_from_chat(chat) || response_from_event(event)
-  end
-
-  defp default_response_value(%{mode: :socket_mode, sink_result: sink_result}) do
-    response_from_sink_result(sink_result)
-  end
-
+  defp default_response_value(%{mode: :webhook, result: result}), do: response_from_result(result)
+  defp default_response_value(%{mode: :socket_mode, sink_result: result}), do: response_from_result(result)
   defp default_response_value(_context), do: nil
 
-  defp response_from_sink_result({:reply, response}), do: response
-  defp response_from_sink_result({:ok, {:reply, response}}), do: response
+  defp response_from_result({:reply, response}), do: response
+  defp response_from_result({:ok, {:reply, response}}), do: response
 
-  defp response_from_sink_result({:ok, {:event, %EventEnvelope{} = event}}),
-    do: response_from_event(event)
+  defp response_from_result({:ok, %Jido.Signal{type: "jido.chat.operation.completed", data: data}}) do
+    case data["result"] do
+      %{"options" => options, "option_groups" => groups} ->
+        if groups == [], do: %{"options" => options}, else: %{"option_groups" => groups}
 
-  defp response_from_sink_result({:ok, {:duplicate, %EventEnvelope{} = event}}),
-    do: response_from_event(event)
-
-  defp response_from_sink_result({:ok, {:message, _message, _context, %EventEnvelope{} = event}}),
-    do: response_from_event(event)
-
-  defp response_from_sink_result(_result), do: nil
-
-  defp response_from_chat(%{metadata: metadata}) when is_map(metadata) do
-    map_get(metadata, [:slack_response, "slack_response", :response_payload, "response_payload"])
+      _ ->
+        nil
+    end
   end
 
-  defp response_from_chat(_chat), do: nil
-
-  defp response_from_event(%EventEnvelope{} = event) do
-    response_from_metadata(event.metadata) ||
-      response_from_payload(event.payload)
-  end
-
-  defp response_from_event(_event), do: nil
-
-  defp response_from_payload(%{metadata: metadata}) when is_map(metadata),
-    do: response_from_metadata(metadata)
-
-  defp response_from_payload(payload) when is_map(payload), do: response_from_metadata(payload)
-  defp response_from_payload(_payload), do: nil
-
-  defp response_from_metadata(metadata) when is_map(metadata) do
-    map_get(metadata, [:slack_response, "slack_response", :response_payload, "response_payload"])
-  end
-
-  defp response_from_metadata(_metadata), do: nil
+  defp response_from_result(_result), do: nil
 
   defp normalize_socket_payload(nil), do: nil
 

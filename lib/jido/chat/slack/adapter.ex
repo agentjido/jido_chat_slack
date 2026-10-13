@@ -7,26 +7,12 @@ defmodule Jido.Chat.Slack.Adapter do
   use Jido.Chat.Adapter
 
   alias Jido.Chat.{
-    ChannelInfo,
-    EphemeralMessage,
-    EventEnvelope,
+    Binding,
     FileUpload,
-    Incoming,
     Media,
-    Message,
-    MessageDeletedEvent,
-    MessagePage,
     MessageSubject,
-    MessageUpdatedEvent,
-    ModalResult,
-    OptionsLoadError,
-    OptionsLoadEvent,
-    OptionsLoadResult,
+    Modal,
     PostPayload,
-    Response,
-    SlashCommandEvent,
-    ThreadPage,
-    ThreadSummary,
     UserInfo,
     WebhookRequest,
     WebhookResponse
@@ -39,6 +25,7 @@ defmodule Jido.Chat.Slack.Adapter do
     FetchOptions,
     InteractionResponse,
     MetadataOptions,
+    Normalizer,
     ModalOptions,
     ReactionOptions,
     Renderer,
@@ -49,10 +36,6 @@ defmodule Jido.Chat.Slack.Adapter do
   alias Jido.Chat.Slack.Transport.ReqClient
 
   @signature_prefix "v0="
-  @media_type_pattern ~r/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
-  @image_filetypes ~w(avif bmp gif heic heif jpeg jpg png svg tif tiff webp)
-  @audio_filetypes ~w(aac flac m4a mp3 ogg wav)
-  @video_filetypes ~w(avi m4v mkv mov mp4 webm)
 
   @impl true
   def channel_type, do: :slack
@@ -91,7 +74,8 @@ defmodule Jido.Chat.Slack.Adapter do
       load_options: :native,
       webhook: :native,
       verify_webhook: :native,
-      parse_event: :native,
+      normalize_event: :native,
+      membership: :native,
       format_webhook_response: :native,
       markdown: :native,
       cards: :native,
@@ -106,6 +90,41 @@ defmodule Jido.Chat.Slack.Adapter do
     }
 
   @impl true
+  def signal_protocol, do: 1
+
+  @impl true
+  def configure_binding(opts) do
+    credentials = opts[:credentials] || %{}
+    ingress = normalize_ingress_opts(opts)
+
+    token =
+      opts[:token] || map_get(credentials, [:token, "token", :bot_token, "bot_token"]) ||
+        Application.get_env(:jido_chat_slack, :slack_bot_token)
+
+    captured =
+      opts
+      |> Keyword.put(:token, token)
+      |> Keyword.put(:transport, opts[:transport] || ReqClient)
+      |> Keyword.put(
+        :signing_secret,
+        opts[:signing_secret] || map_get(credentials, [:signing_secret, "signing_secret"]) ||
+          Application.get_env(:jido_chat_slack, :slack_signing_secret)
+      )
+      |> Keyword.put(
+        :app_token,
+        opts[:app_token] || map_get(ingress, [:app_token, "app_token"]) ||
+          map_get(credentials, [:app_token, "app_token"]) || Application.get_env(:jido_chat_slack, :slack_app_token)
+      )
+      |> Keyword.put(:options_loader, opts[:options_loader] || Application.get_env(:jido_chat_slack, :options_loader))
+      |> Keyword.put(:ingress, ingress)
+
+    if is_binary(token) and token != "", do: {:ok, captured}, else: {:error, :missing_token}
+  end
+
+  @impl true
+  def normalize_event(%Binding{} = binding, input), do: Normalizer.normalize(binding, input)
+
+  @impl true
   def listener_child_specs(bridge_id, opts \\ [])
       when is_binary(bridge_id) and is_list(opts) do
     ingress = normalize_ingress_opts(opts)
@@ -115,75 +134,23 @@ defmodule Jido.Chat.Slack.Adapter do
         {:ok, []}
 
       :socket_mode ->
-        with {:ok, sink_mfa} <- validate_sink_mfa(Keyword.get(opts, :sink_mfa)) do
+        with %Binding{} = binding <- Keyword.get(opts, :binding),
+             {:ok, sink_mfa} <- validate_sink_mfa(Keyword.get(opts, :sink_mfa)) do
           {:ok,
            [
              Supervisor.child_spec(
-               {SocketModeWorker, socket_mode_worker_opts(bridge_id, ingress, opts, sink_mfa)},
+               {SocketModeWorker,
+                socket_mode_worker_opts(bridge_id, ingress, binding.options, sink_mfa) |> Keyword.put(:binding, binding)},
                id: {:slack_socket_mode_worker, bridge_id}
              )
            ]}
+        else
+          nil -> {:error, :invalid_binding}
+          {:error, _} = error -> error
         end
 
       :invalid ->
         {:error, :invalid_ingress_mode}
-    end
-  end
-
-  @impl true
-  def transform_incoming(payload) do
-    with {:ok, message_payload, metadata} <- normalize_message_payload(payload) do
-      channel_id = map_get(message_payload, [:channel, "channel"])
-      user_id = message_user_id(message_payload)
-      text = message_text(message_payload)
-      thread_ts = external_thread_id(message_payload)
-      chat_type = parse_chat_type(message_payload)
-      mentions = parse_mentions(text)
-
-      {:ok,
-       Incoming.new(%{
-         external_room_id: channel_id,
-         external_user_id: user_id,
-         text: text,
-         username: message_username(message_payload),
-         display_name: message_display_name(message_payload),
-         external_message_id: map_get(message_payload, [:ts, "ts"]),
-         external_reply_to_id: external_reply_to_id(message_payload),
-         external_thread_id: thread_ts,
-         timestamp: map_get(message_payload, [:ts, "ts"]),
-         chat_type: chat_type,
-         chat_title:
-           map_get(message_payload, [
-             :channel_name,
-             "channel_name",
-             :channel_title,
-             "channel_title"
-           ]),
-         was_mentioned: metadata.was_mentioned,
-         mentions: mentions,
-         media: extract_media(message_payload),
-         channel_meta: %{
-           adapter_name: :slack,
-           external_room_id: channel_id,
-           external_thread_id: thread_ts,
-           chat_type: chat_type,
-           chat_title:
-             map_get(message_payload, [
-               :channel_name,
-               "channel_name",
-               :channel_title,
-               "channel_title"
-             ]),
-           is_dm: chat_type == :dm,
-           metadata: %{
-             subtype: map_get(message_payload, [:subtype, "subtype"]),
-             team: map_get(message_payload, [:team, "team"]),
-             event_ts: map_get(message_payload, [:event_ts, "event_ts"])
-           }
-         },
-         raw: normalize_struct(message_payload),
-         metadata: Map.merge(metadata.extra, %{subtype: map_get(message_payload, [:subtype, "subtype"])})
-       })}
     end
   end
 
@@ -198,15 +165,14 @@ defmodule Jido.Chat.Slack.Adapter do
              SendOptions.transport_opts(opts) ++ payload_to_opts(SendOptions.payload_opts(opts))
            ) do
       {:ok,
-       Response.new(%{
-         external_message_id: map_get(result, [:ts, "ts"]),
-         external_room_id: map_get(result, [:channel, "channel"]) || channel_id,
-         timestamp: map_get(result, [:ts, "ts"]),
-         channel_type: :slack,
-         status: :sent,
-         raw: result,
-         metadata: %{message: map_get(result, [:message, "message"])}
-       })}
+       %{
+         "id" => stringify(map_get(result, [:ts, "ts"])),
+         "room_id" => stringify(map_get(result, [:channel, "channel"]) || channel_id),
+         "text" => text,
+         "timestamp" => map_get(result, [:ts, "ts"]),
+         "status" => "sent"
+       }
+       |> compact()}
     end
   end
 
@@ -266,15 +232,14 @@ defmodule Jido.Chat.Slack.Adapter do
              EditOptions.transport_opts(opts) ++ payload_to_opts(EditOptions.payload_opts(opts))
            ) do
       {:ok,
-       Response.new(%{
-         external_message_id: map_get(result, [:ts, "ts"]) || stringify(message_id),
-         external_room_id: map_get(result, [:channel, "channel"]) || channel_id,
-         timestamp: map_get(result, [:ts, "ts"]),
-         channel_type: :slack,
-         status: :edited,
-         raw: result,
-         metadata: %{message: map_get(result, [:message, "message"])}
-       })}
+       %{
+         "id" => stringify(map_get(result, [:ts, "ts"]) || message_id),
+         "room_id" => stringify(map_get(result, [:channel, "channel"]) || channel_id),
+         "text" => text,
+         "timestamp" => map_get(result, [:ts, "ts"]),
+         "status" => "updated"
+       }
+       |> compact()}
     end
   end
 
@@ -299,75 +264,36 @@ defmodule Jido.Chat.Slack.Adapter do
 
     with {:ok, result} <-
            transport(opts).fetch_metadata(channel_id, MetadataOptions.transport_opts(opts)) do
-      metadata = normalize_struct(result)
-
       {:ok,
-       ChannelInfo.new(%{
-         id: stringify(map_get(metadata, [:id, "id"]) || channel_id),
-         name:
-           map_get(metadata, [:name, "name"]) ||
-             map_get(metadata, [:user, "user"]) |> maybe_get([:name, "name"]),
-         is_dm: conversation_is_dm?(metadata, channel_id),
-         member_count: map_get(metadata, [:num_members, "num_members"]),
-         metadata: metadata
-       })}
+       %{
+         "id" => stringify(map_get(result, [:id, "id"]) || channel_id),
+         "name" => map_get(result, [:name, "name"]),
+         "kind" => if(conversation_is_dm?(result, channel_id), do: "direct", else: "channel")
+       }
+       |> compact()}
     end
   end
 
   @impl true
   def fetch_thread(channel_id, opts \\ []) do
-    external_thread_id =
-      opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id]
+    thread = opts[:thread_id] || opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id]
 
-    if is_nil(external_thread_id) do
-      with {:ok, info} <- fetch_metadata(channel_id, opts) do
-        {:ok,
-         %{
-           id: "slack:#{channel_id}",
-           adapter_name: :slack,
-           external_room_id: channel_id,
-           channel_id: "slack:#{channel_id}",
-           is_dm: info.is_dm || false,
-           metadata: info.metadata
-         }}
-      end
-    else
-      with {:ok, info} <- fetch_metadata(channel_id, opts),
-           {:ok, root_message} <-
-             fetch_message(
-               channel_id,
-               external_thread_id,
-               Keyword.put(opts, :thread_ts, external_thread_id)
-             ) do
-        {:ok,
-         %{
-           id: thread_id(channel_id, external_thread_id),
-           adapter_name: :slack,
-           external_room_id: channel_id,
-           external_thread_id: stringify(external_thread_id),
-           channel_id: "slack:#{channel_id}",
-           is_dm: info.is_dm || false,
-           metadata: Map.merge(info.metadata, %{root_message: root_message})
-         }}
+    with {:ok, info} <- fetch_metadata(channel_id, opts) do
+      if thread do
+        with {:ok, root} <- fetch_message(channel_id, thread, Keyword.put(opts, :thread_ts, thread)),
+             do: {:ok, %{"id" => stringify(thread), "room_id" => stringify(channel_id), "name" => root["text"]}}
+      else
+        {:ok, %{"id" => stringify(channel_id), "room_id" => stringify(channel_id), "name" => info["name"]}}
       end
     end
   end
 
   @impl true
   def fetch_message(channel_id, message_id, opts \\ []) do
-    transport_opts =
-      opts
-      |> pick_opts([:token, :transport, :req, :base_url, :thread_ts, :external_thread_id])
+    selected = pick_opts(opts, [:token, :transport, :req, :base_url, :thread_ts, :external_thread_id, :thread_id])
 
-    with {:ok, raw_message} <-
-           transport(transport_opts).fetch_message(channel_id, message_id, transport_opts),
-         {:ok, incoming} <- transform_incoming(ensure_channel_id(raw_message, channel_id)) do
-      {:ok,
-       Message.from_incoming(incoming,
-         adapter_name: :slack,
-         thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id)
-       )}
-    end
+    with {:ok, raw} when is_map(raw) <- transport(selected).fetch_message(channel_id, message_id, selected),
+         do: {:ok, portable_message(raw, channel_id, message_id)}
   end
 
   @impl true
@@ -400,7 +326,7 @@ defmodule Jido.Chat.Slack.Adapter do
       |> Keyword.put_new(:include_num_members, false)
 
     thread_ts =
-      opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id] || opts[:thread_id]
+      opts[:thread_id] || opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id]
 
     with {:ok, channel} <- transport(transport_opts).fetch_metadata(channel_id, transport_opts) do
       build_subject(channel_id, thread_ts, channel, transport_opts)
@@ -410,7 +336,7 @@ defmodule Jido.Chat.Slack.Adapter do
   @impl true
   def get_thread_participants(channel_id, opts \\ []) do
     thread_ts =
-      opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id] || opts[:thread_id]
+      opts[:thread_id] || opts[:external_thread_id] || opts[:thread_ts] || opts[:message_id]
 
     with {:ok, thread_ts} <- require_thread_ts(thread_ts),
          {:ok, limit} <- bounded_positive_integer(opts[:limit], 100, 1_000, :invalid_limit),
@@ -428,7 +354,7 @@ defmodule Jido.Chat.Slack.Adapter do
              max_pages
            ),
          {:ok, users} <- participant_entries_to_users(entries, opts) do
-      {:ok, users}
+      {:ok, %{participants: users, complete: false, scope: "observed", next_cursor: nil}}
     end
   end
 
@@ -473,97 +399,67 @@ defmodule Jido.Chat.Slack.Adapter do
              channel_id,
              user_id,
              text,
-             EphemeralOptions.transport_opts(opts) ++
-               payload_to_opts(EphemeralOptions.payload_opts(opts))
+             EphemeralOptions.transport_opts(opts) ++ payload_to_opts(EphemeralOptions.payload_opts(opts))
            ) do
-      thread_ts = map_get(result, [:message_ts, "message_ts"]) || opts.thread_ts
-
       {:ok,
-       EphemeralMessage.new(%{
-         id:
-           "slack:ephemeral:" <>
-             (map_get(result, [:message_ts, "message_ts"]) || Jido.Chat.ID.generate!()),
-         thread_id: thread_id(channel_id, thread_ts),
-         used_fallback: false,
-         raw: result,
-         metadata: %{channel_id: stringify(channel_id), user_id: stringify(user_id)}
-       })}
+       %{
+         "id" => stringify(map_get(result, [:message_ts, "message_ts"])),
+         "room_id" => stringify(channel_id),
+         "text" => text,
+         "status" => "sent"
+       }}
     end
   end
 
   @impl true
-  def open_modal(channel_id, payload, opts \\ []) when is_map(payload) do
-    opts = opts |> pick_opts([:token, :transport, :req, :base_url, :trigger_id]) |> ModalOptions.new()
+  def open_modal(channel_id, %Modal{} = modal, opts \\ []) do
+    trigger = opts[:trigger_id] || modal.metadata[:trigger_id] || modal.metadata["trigger_id"]
+
+    opts =
+      Keyword.put(opts, :trigger_id, trigger)
+      |> pick_opts([:token, :transport, :req, :base_url, :trigger_id])
+      |> ModalOptions.new()
 
     if is_nil(opts.trigger_id) do
       {:error, :missing_trigger_id}
     else
-      with {:ok, view_payload} <- Renderer.modal(payload),
-           {:ok, result} <-
-             transport(opts).open_modal(
-               opts.trigger_id,
-               view_payload,
-               ModalOptions.transport_opts(opts)
-             ) do
+      with {:ok, view_payload} <- Renderer.modal(modal),
+           {:ok, result} <- transport(opts).open_modal(opts.trigger_id, view_payload, ModalOptions.transport_opts(opts)) do
         view = map_get(result, [:view, "view"]) || %{}
+        id = stringify(map_get(view, [:id, "id"]) || map_get(result, [:view_id, "view_id"]))
 
-        {:ok,
-         ModalResult.new(%{
-           id:
-             "slack:modal:" <>
-               (map_get(view, [:id, "id"]) || map_get(result, [:view_id, "view_id"]) ||
-                  Jido.Chat.ID.generate!()),
-           status: :opened,
-           external_room_id: channel_id,
-           raw: result,
-           metadata: %{
-             trigger_id: opts.trigger_id,
-             view_id: map_get(view, [:id, "id"]),
-             callback_id: map_get(view, [:callback_id, "callback_id"])
-           }
-         })}
+        if owner = modal.metadata[:binding_owner],
+          do: :ets.insert(owner.resources, {{:slack_view_room, id}, channel_id})
+
+        {:ok, %{"opened" => true, "id" => id} |> compact()}
       end
     end
   end
 
-  @impl true
-  def load_options(%OptionsLoadEvent{} = event, opts \\ []) do
-    timeout_ms = opts[:timeout_ms] || event.timeout_ms || 3_000
+  @doc false
+  def prepare_modal(%Binding{} = binding, interaction_id, modal) do
+    with {:ok, controls} <- Normalizer.interaction(binding, interaction_id),
+         trigger when is_binary(trigger) <- controls["trigger_id"] do
+      modal = Modal.new(modal)
+      metadata = modal.metadata |> Map.put(:trigger_id, trigger) |> Map.put(:binding_owner, binding)
+      Jido.Chat.put_resource(binding, "modal", %{modal | metadata: metadata})
+    else
+      {:error, _} = error -> error
+      _ -> Jido.Chat.Signal.Policy.error(:invalid_resource)
+    end
+  end
 
+  @impl true
+  def load_options(%Jido.Signal{} = event, opts \\ []) do
     with {:ok, loader} <- options_loader(opts),
-         {:ok, raw_result} <- run_options_loader(loader, event, opts, timeout_ms),
-         {:ok, result} <- normalize_options_result(raw_result),
-         {:ok, slack_response} <- Renderer.options_response(result) do
+         {:ok, result} <- loader |> invoke_options_loader(event, opts) |> normalize_loader_return(),
+         {:ok, _wire} <- Renderer.options_response(result) do
       {:ok,
        %{
-         result
-         | metadata:
-             result.metadata
-             |> Map.put(:slack_response, slack_response)
-             |> Map.put(:provider_limit, Renderer.option_limit())
+         options: map_get(result, [:options, "options"]) || [],
+         option_groups: map_get(result, [:option_groups, "option_groups"]) || [],
+         complete: true
        }}
-    else
-      {:error, :timeout} ->
-        {:error, OptionsLoadError.timeout(timeout_ms)}
-
-      {:error, %OptionsLoadError{} = error} ->
-        {:error, error}
-
-      {:error, {:provider_limit, field, limit}} ->
-        {:error,
-         OptionsLoadError.new(%{
-           code: "provider_limit",
-           message: "Slack #{field} limit is #{limit}",
-           metadata: %{field: field, limit: limit}
-         })}
-
-      {:error, reason} ->
-        {:error,
-         OptionsLoadError.new(%{
-           code: "options_load_failed",
-           message: inspect(reason),
-           metadata: %{reason: reason}
-         })}
     end
   end
 
@@ -622,17 +518,11 @@ defmodule Jido.Chat.Slack.Adapter do
       thread_ts = opts.thread_ts
 
       {:ok,
-       MessagePage.new(%{
-         messages:
-           normalize_messages(
-             map_get(result, [:messages, "messages"]) || [],
-             channel_id,
-             thread_ts
-           ),
-         next_cursor: next_cursor(result),
-         direction: opts.direction,
-         metadata: %{raw: result}
-       })}
+       %{
+         "messages" => normalize_messages(map_get(result, [:messages, "messages"]) || [], channel_id, thread_ts),
+         "next_cursor" => next_cursor(result),
+         "complete" => map_get(result, [:has_more, "has_more"]) == false or is_nil(next_cursor(result))
+       }}
     end
   end
 
@@ -662,19 +552,18 @@ defmodule Jido.Chat.Slack.Adapter do
         |> Enum.flat_map(&normalize_thread_summary(channel_id, &1))
 
       {:ok,
-       ThreadPage.new(%{
-         threads: threads,
-         next_cursor: next_cursor(result),
-         metadata: %{raw: result}
-       })}
+       %{
+         "threads" => threads,
+         "next_cursor" => next_cursor(result),
+         "complete" => map_get(result, [:has_more, "has_more"]) == false or is_nil(next_cursor(result))
+       }}
     end
   end
 
   @impl true
   def verify_webhook(%WebhookRequest{} = request, opts \\ []) do
     signing_secret =
-      opts[:signing_secret] || opts[:slack_signing_secret] ||
-        Application.get_env(:jido_chat_slack, :slack_signing_secret)
+      opts[:signing_secret] || opts[:slack_signing_secret]
 
     if is_nil(signing_secret) do
       :ok
@@ -684,644 +573,24 @@ defmodule Jido.Chat.Slack.Adapter do
   end
 
   @impl true
-  def parse_event(%WebhookRequest{} = request, _opts \\ []) do
-    with {:ok, payload} <- decode_request_payload(request) do
-      parse_payload_event(payload, request)
-    end
-  end
-
-  @impl true
   def format_webhook_response(result, opts \\ [])
 
-  def format_webhook_response({:ok, _chat, :noop}, opts) do
+  def format_webhook_response({:ok, _} = result, opts) do
     request = opts[:request]
-    payload = request && request_payload(request)
+    payload = if request, do: request_payload(request), else: %{}
 
     if url_verification_payload?(payload) do
-      WebhookResponse.new(%{
-        status: 200,
-        headers: %{"content-type" => "text/plain"},
-        body: map_get(payload, [:challenge, "challenge"])
-      })
+      WebhookResponse.new(%{status: 200, body: map_get(payload, [:challenge, "challenge"])})
     else
-      WebhookResponse.new(%{
-        status: 200,
-        headers: %{"content-type" => "text/plain"},
-        body: ""
-      })
-    end
-  end
-
-  def format_webhook_response({:ok, _chat, _event} = result, opts) do
-    case InteractionResponse.webhook_response(result, opts) do
-      %WebhookResponse{} = response ->
-        response
-
-      nil ->
-        WebhookResponse.new(%{
-          status: 200,
-          headers: %{"content-type" => "text/plain"},
-          body: ""
-        })
+      InteractionResponse.webhook_response(result, opts) || WebhookResponse.new(%{status: 200, body: ""})
     end
   end
 
   def format_webhook_response({:error, reason}, _opts)
-      when reason in [
-             :invalid_signature,
-             :stale_timestamp,
-             :missing_signature,
-             :missing_timestamp
-           ] do
-    WebhookResponse.error(401, %{error: to_string(reason)})
-  end
+      when reason in [:invalid_signature, :stale_timestamp, :missing_signature, :missing_timestamp],
+      do: WebhookResponse.error(401, %{error: "invalid_signature"})
 
-  def format_webhook_response({:error, :missing_raw_body}, _opts) do
-    WebhookResponse.error(400, %{error: "missing_raw_body"})
-  end
-
-  def format_webhook_response({:error, %OptionsLoadError{} = error}, _opts) do
-    WebhookResponse.new(%{
-      status: 200,
-      headers: %{"content-type" => "application/json"},
-      body: %{"options" => []},
-      metadata: %{options_load_error: OptionsLoadError.to_map(error)}
-    })
-  end
-
-  def format_webhook_response({:error, reason}, _opts) do
-    WebhookResponse.error(400, %{error: inspect(reason)})
-  end
-
-  @impl true
-  def handle_webhook(%Jido.Chat{} = chat, payload, opts \\ []) when is_map(payload) do
-    request =
-      WebhookRequest.new(%{
-        adapter_name: :slack,
-        headers: opts[:headers] || %{},
-        payload: payload,
-        raw: opts[:raw_body] || payload,
-        metadata: %{raw_body: opts[:raw_body]}
-      })
-
-    with :ok <- verify_webhook(request, opts),
-         {:ok, parsed_event} <- parse_event(request, opts),
-         {:ok, updated_chat, incoming} <- route_parsed_event(chat, parsed_event, opts, request) do
-      {:ok, updated_chat, incoming}
-    end
-  end
-
-  defp route_parsed_event(chat, :noop, _opts, %WebhookRequest{} = request) do
-    {:ok, chat, synthetic_incoming("slack", nil, nil, request_payload(request), :noop)}
-  end
-
-  defp route_parsed_event(chat, %EventEnvelope{} = envelope, opts, _request) do
-    with {:ok, updated_chat, routed_envelope} <-
-           Jido.Chat.process_event(chat, :slack, envelope, opts),
-         {:ok, incoming} <- incoming_from_event(routed_envelope) do
-      {:ok, updated_chat, incoming}
-    end
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :message, payload: %Incoming{} = incoming}),
-    do: {:ok, incoming}
-
-  defp incoming_from_event(%EventEnvelope{event_type: :slash_command, raw: raw}) do
-    {:ok,
-     synthetic_incoming(
-       map_get(raw, [:channel_id, "channel_id"]) || "slack",
-       map_get(raw, [:user_id, "user_id"]),
-       map_get(raw, [:trigger_id, "trigger_id"]),
-       raw,
-       :slash_command
-     )}
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :action, raw: raw}) do
-    channel_id =
-      map_get(raw, [:channel, "channel"])
-      |> maybe_get([:id, "id"])
-
-    user_id = map_get(raw, [:user, "user"]) |> maybe_get([:id, "id"])
-    message_id = map_get(raw, [:container, "container"]) |> maybe_get([:message_ts, "message_ts"])
-
-    {:ok, synthetic_incoming(channel_id || "slack", user_id, message_id, raw, :action)}
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :modal_submit, raw: raw}) do
-    metadata =
-      decode_private_metadata(
-        map_get(raw, [:view, "view"])
-        |> maybe_get([:private_metadata, "private_metadata"])
-      )
-
-    {:ok,
-     synthetic_incoming(
-       Map.get(metadata, "channel_id") || "slack",
-       map_get(raw, [:user, "user"]) |> maybe_get([:id, "id"]),
-       map_get(raw, [:view, "view"]) |> maybe_get([:id, "id"]),
-       raw,
-       :modal_submit
-     )}
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :modal_close, raw: raw}) do
-    metadata =
-      decode_private_metadata(
-        map_get(raw, [:view, "view"])
-        |> maybe_get([:private_metadata, "private_metadata"])
-      )
-
-    {:ok,
-     synthetic_incoming(
-       Map.get(metadata, "channel_id") || "slack",
-       map_get(raw, [:user, "user"]) |> maybe_get([:id, "id"]),
-       map_get(raw, [:view, "view"]) |> maybe_get([:id, "id"]),
-       raw,
-       :modal_close
-     )}
-  end
-
-  defp incoming_from_event(%EventEnvelope{
-         event_type: :options_load,
-         payload: %OptionsLoadResult{} = result,
-         raw: raw
-       }) do
-    {:ok,
-     synthetic_incoming(
-       "slack",
-       nil,
-       nil,
-       raw,
-       :options_load
-     )
-     |> then(&%{&1 | metadata: Map.put(&1.metadata, :options_result, result)})}
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :reaction, raw: raw}) do
-    item = map_get(raw, [:item, "item"]) || %{}
-
-    {:ok,
-     synthetic_incoming(
-       map_get(item, [:channel, "channel"]) || "slack",
-       map_get(raw, [:user, "user"]),
-       map_get(item, [:ts, "ts"]),
-       raw,
-       :reaction
-     )}
-  end
-
-  defp incoming_from_event(_), do: {:error, :unsupported_event_type}
-
-  defp parse_payload_event(payload, request) when is_map(payload) do
-    cond do
-      url_verification_payload?(payload) ->
-        {:ok, :noop}
-
-      slash_command_payload?(payload) ->
-        {:ok, slash_command_envelope(payload)}
-
-      interactive_payload?(payload) ->
-        interactive_event_envelope(payload)
-
-      event_callback_payload?(payload) ->
-        event_callback_envelope(payload, request)
-
-      message_like_payload?(payload) ->
-        with {:ok, incoming} <- transform_incoming(payload) do
-          {:ok,
-           EventEnvelope.new(%{
-             adapter_name: :slack,
-             event_type: :message,
-             thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id),
-             channel_id: stringify(incoming.external_room_id),
-             message_id: stringify(incoming.external_message_id),
-             payload: incoming,
-             raw: payload,
-             metadata: %{source: :direct}
-           })}
-        end
-
-      true ->
-        {:ok, :noop}
-    end
-  end
-
-  defp parse_payload_event(_payload, _request), do: {:ok, :noop}
-
-  defp event_callback_envelope(payload, request) do
-    event = map_get(payload, [:event, "event"]) || %{}
-
-    case normalize_event_type(map_get(event, [:type, "type"])) do
-      :message ->
-        case map_get(event, [:subtype, "subtype"]) do
-          subtype when subtype in ["message_changed", :message_changed] ->
-            message_updated_envelope(event, payload, request)
-
-          subtype when subtype in ["message_deleted", :message_deleted] ->
-            message_deleted_envelope(event, payload, request)
-
-          _ ->
-            message_created_envelope(event, payload, request)
-        end
-
-      :app_mention ->
-        with {:ok, incoming} <- transform_incoming(Map.put(event, "type", "app_mention")) do
-          {:ok,
-           EventEnvelope.new(%{
-             adapter_name: :slack,
-             event_type: :message,
-             thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id),
-             channel_id: stringify(incoming.external_room_id),
-             message_id: stringify(incoming.external_message_id),
-             payload: incoming,
-             raw: payload,
-             metadata: %{event_id: map_get(payload, [:event_id, "event_id"])}
-           })}
-        end
-
-      :reaction_added ->
-        {:ok, reaction_envelope(payload, true)}
-
-      :reaction_removed ->
-        {:ok, reaction_envelope(payload, false)}
-
-      _ ->
-        {:ok, :noop}
-    end
-  end
-
-  defp message_created_envelope(event, payload, request) do
-    with {:ok, incoming} <- transform_incoming(event) do
-      {:ok,
-       EventEnvelope.new(%{
-         adapter_name: :slack,
-         event_type: :message,
-         thread_id: thread_id(incoming.external_room_id, incoming.external_thread_id),
-         channel_id: stringify(incoming.external_room_id),
-         message_id: stringify(incoming.external_message_id),
-         payload: incoming,
-         raw: payload,
-         metadata: %{
-           event_id: map_get(payload, [:event_id, "event_id"]),
-           path: request.path
-         }
-       })}
-    end
-  end
-
-  defp message_updated_envelope(event, payload, request) do
-    message = map_get(event, [:message, "message"])
-    previous_message = map_get(event, [:previous_message, "previous_message"])
-
-    if is_map(message) do
-      channel_id = lifecycle_channel_id(event, message)
-      message_context = inherit_lifecycle_context(message, event, previous_message)
-      timestamp = lifecycle_timestamp(event, message)
-
-      with {:ok, incoming} <- transform_incoming(message_context) do
-        author = incoming.author || lifecycle_author(previous_message)
-
-        normalized_message =
-          incoming
-          |> Message.from_incoming(adapter_name: :slack)
-          |> Map.put(:author, author)
-          |> Map.put(:raw, message)
-          |> Map.put(:updated_at, timestamp)
-
-        lifecycle_event =
-          MessageUpdatedEvent.new(%{
-            adapter_name: :slack,
-            thread_id: thread_id(channel_id, incoming.external_thread_id),
-            channel_id: stringify(channel_id),
-            message_id: stringify(incoming.external_message_id),
-            author: author,
-            timestamp: timestamp,
-            message: normalized_message,
-            metadata: lifecycle_metadata(payload, event, request),
-            raw: payload
-          })
-
-        {:ok, lifecycle_envelope(:message_updated, lifecycle_event)}
-      end
-    else
-      {:ok, :noop}
-    end
-  end
-
-  defp message_deleted_envelope(event, payload, request) do
-    previous_message = map_get(event, [:previous_message, "previous_message"])
-    channel_id = lifecycle_channel_id(event, previous_message)
-    external_thread_id = lifecycle_thread_id(previous_message)
-
-    lifecycle_event =
-      MessageDeletedEvent.new(%{
-        adapter_name: :slack,
-        thread_id: thread_id(channel_id, external_thread_id),
-        channel_id: stringify(channel_id),
-        message_id: deleted_message_id(event, previous_message),
-        author: lifecycle_author(previous_message),
-        timestamp: lifecycle_timestamp(event, previous_message),
-        message: nil,
-        metadata: lifecycle_metadata(payload, event, request),
-        raw: payload
-      })
-
-    {:ok, lifecycle_envelope(:message_deleted, lifecycle_event)}
-  end
-
-  defp lifecycle_envelope(event_type, lifecycle_event) do
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: event_type,
-      thread_id: lifecycle_event.thread_id,
-      channel_id: lifecycle_event.channel_id,
-      message_id: lifecycle_event.message_id,
-      payload: lifecycle_event,
-      raw: lifecycle_event.raw,
-      metadata: lifecycle_event.metadata
-    })
-  end
-
-  defp lifecycle_metadata(payload, event, request) do
-    %{
-      event_id: map_get(payload, [:event_id, "event_id"]),
-      path: request.path,
-      subtype: map_get(event, [:subtype, "subtype"]),
-      previous_message:
-        event
-        |> map_get([:previous_message, "previous_message"])
-    }
-  end
-
-  defp inherit_lifecycle_context(message, event, previous_message) do
-    message
-    |> put_if_missing(:channel, lifecycle_channel_id(event, message))
-    |> put_if_missing(
-      :thread_ts,
-      lifecycle_thread_id(previous_message)
-    )
-    |> put_if_missing(
-      :channel_type,
-      map_get(event, [:channel_type, "channel_type"])
-    )
-  end
-
-  defp lifecycle_channel_id(event, fallback) do
-    map_get(event, [:channel, "channel"]) ||
-      if(is_map(fallback), do: map_get(fallback, [:channel, "channel"]))
-  end
-
-  defp lifecycle_thread_id(message) when is_map(message), do: external_thread_id(message)
-  defp lifecycle_thread_id(_message), do: nil
-
-  defp lifecycle_author(message) when is_map(message) do
-    case message_user_id(message) do
-      nil ->
-        nil
-
-      user_id ->
-        Jido.Chat.Author.new(%{
-          user_id: stringify(user_id),
-          user_name: message_username(message) || stringify(user_id),
-          full_name: message_display_name(message)
-        })
-    end
-  end
-
-  defp lifecycle_author(_message), do: nil
-
-  defp lifecycle_timestamp(event, message) do
-    map_get(event, [:event_ts, "event_ts"]) ||
-      if(is_map(message), do: message |> map_get([:edited, "edited"]) |> maybe_get([:ts, "ts"])) ||
-      if(is_map(message), do: map_get(message, [:ts, "ts"]))
-  end
-
-  defp deleted_message_id(event, previous_message) do
-    stringify(
-      map_get(event, [:deleted_ts, "deleted_ts"]) ||
-        if(is_map(previous_message), do: map_get(previous_message, [:ts, "ts"])) ||
-        map_get(event, [:ts, "ts"])
-    )
-  end
-
-  defp put_if_missing(map, key, value) when is_map(map) and is_atom(key) do
-    if is_nil(value) or not is_nil(map_get(map, [key])) do
-      map
-    else
-      Map.put(map, Atom.to_string(key), value)
-    end
-  end
-
-  defp slash_command_envelope(payload) do
-    channel_id = map_get(payload, [:channel_id, "channel_id"])
-
-    user =
-      author_from_user_payload(%{
-        "id" => map_get(payload, [:user_id, "user_id"]),
-        "username" => map_get(payload, [:user_name, "user_name"])
-      })
-
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: :slash_command,
-      thread_id: thread_id(channel_id, nil),
-      channel_id: stringify(channel_id),
-      message_id: stringify(map_get(payload, [:trigger_id, "trigger_id"])),
-      payload:
-        SlashCommandEvent.new(%{
-          adapter_name: :slack,
-          thread_id: thread_id(channel_id, nil),
-          channel_id: stringify(channel_id),
-          message_id: stringify(map_get(payload, [:trigger_id, "trigger_id"])),
-          command: map_get(payload, [:command, "command"]),
-          text: map_get(payload, [:text, "text"]) || "",
-          trigger_id: stringify(map_get(payload, [:trigger_id, "trigger_id"])),
-          user: user,
-          raw: payload,
-          metadata: %{
-            response_url: map_get(payload, [:response_url, "response_url"]),
-            team_id: map_get(payload, [:team_id, "team_id"])
-          }
-        }),
-      raw: payload,
-      metadata: %{}
-    })
-  end
-
-  defp interactive_event_envelope(payload) do
-    case map_get(payload, [:type, "type"]) do
-      "block_actions" ->
-        {:ok, action_envelope(payload)}
-
-      "shortcut" ->
-        {:ok, action_envelope(payload)}
-
-      "message_action" ->
-        {:ok, action_envelope(payload)}
-
-      "view_submission" ->
-        {:ok, modal_submit_envelope(payload)}
-
-      "view_closed" ->
-        {:ok, modal_close_envelope(payload)}
-
-      "block_suggestion" ->
-        {:ok, options_load_envelope(payload)}
-
-      _ ->
-        {:ok, :noop}
-    end
-  end
-
-  defp action_envelope(payload) do
-    action = first_action(payload)
-    channel_id = map_get(payload, [:channel, "channel"]) |> maybe_get([:id, "id"])
-
-    message_id =
-      map_get(payload, [:container, "container"]) |> maybe_get([:message_ts, "message_ts"])
-
-    message = map_get(payload, [:message, "message"]) || %{}
-    thread_ts = external_thread_id(message)
-
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: :action,
-      thread_id: thread_id(channel_id, thread_ts),
-      channel_id: stringify(channel_id),
-      message_id: stringify(message_id || map_get(message, [:ts, "ts"])),
-      payload: %{
-        adapter_name: :slack,
-        thread_id: thread_id(channel_id, thread_ts),
-        message_id: stringify(message_id || map_get(message, [:ts, "ts"])),
-        action_id:
-          map_get(action, [:action_id, "action_id"]) ||
-            map_get(payload, [:callback_id, "callback_id"]),
-        value: extract_action_value(action),
-        trigger_id: map_get(payload, [:trigger_id, "trigger_id"]),
-        user: author_from_user_payload(map_get(payload, [:user, "user"]) || %{}),
-        raw: payload,
-        metadata: %{
-          response_url: map_get(payload, [:response_url, "response_url"]),
-          channel_id: channel_id
-        }
-      },
-      raw: payload,
-      metadata: %{}
-    })
-  end
-
-  defp modal_submit_envelope(payload) do
-    view = map_get(payload, [:view, "view"]) || %{}
-
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: :modal_submit,
-      thread_id: nil,
-      channel_id: nil,
-      message_id: stringify(map_get(view, [:id, "id"])),
-      payload: %{
-        adapter_name: :slack,
-        callback_id: map_get(view, [:callback_id, "callback_id"]),
-        view_id: map_get(view, [:id, "id"]),
-        values: extract_modal_values(view),
-        user: author_from_user_payload(map_get(payload, [:user, "user"]) || %{}),
-        raw: payload,
-        metadata: %{
-          private_metadata: map_get(view, [:private_metadata, "private_metadata"]),
-          hash: map_get(view, [:hash, "hash"])
-        }
-      },
-      raw: payload,
-      metadata: %{}
-    })
-  end
-
-  defp modal_close_envelope(payload) do
-    view = map_get(payload, [:view, "view"]) || %{}
-
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: :modal_close,
-      thread_id: nil,
-      channel_id: nil,
-      message_id: stringify(map_get(view, [:id, "id"])),
-      payload: %{
-        adapter_name: :slack,
-        callback_id: map_get(view, [:callback_id, "callback_id"]),
-        view_id: map_get(view, [:id, "id"]),
-        user: author_from_user_payload(map_get(payload, [:user, "user"]) || %{}),
-        raw: payload,
-        metadata: %{
-          private_metadata: map_get(view, [:private_metadata, "private_metadata"]),
-          hash: map_get(view, [:hash, "hash"])
-        }
-      },
-      raw: payload,
-      metadata: %{}
-    })
-  end
-
-  defp options_load_envelope(payload) do
-    channel_id = map_get(payload, [:channel, "channel"]) |> maybe_get([:id, "id"])
-    view = map_get(payload, [:view, "view"]) || %{}
-    message = map_get(payload, [:message, "message"]) || %{}
-    message_id = map_get(message, [:ts, "ts"])
-    options_thread_id = options_thread_id(channel_id, message)
-
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: :options_load,
-      thread_id: options_thread_id,
-      channel_id: stringify(channel_id),
-      message_id: stringify(message_id),
-      payload:
-        OptionsLoadEvent.new(%{
-          adapter_name: :slack,
-          action_id: map_get(payload, [:action_id, "action_id"]),
-          query: map_get(payload, [:value, "value"]) || "",
-          limit: Renderer.option_limit(),
-          thread_id: options_thread_id,
-          channel_id: stringify(channel_id),
-          message_id: stringify(message_id),
-          view_id: stringify(map_get(view, [:id, "id"])),
-          user: author_from_user_payload(map_get(payload, [:user, "user"]) || %{}),
-          raw: payload,
-          metadata: %{
-            team_id: map_get(payload, [:team, "team"]) |> maybe_get([:id, "id"])
-          }
-        }),
-      raw: payload,
-      metadata: %{}
-    })
-  end
-
-  defp reaction_envelope(payload, added?) do
-    event = map_get(payload, [:event, "event"]) || %{}
-    item = map_get(event, [:item, "item"]) || %{}
-    channel_id = map_get(item, [:channel, "channel"])
-    ts = map_get(item, [:ts, "ts"])
-
-    EventEnvelope.new(%{
-      adapter_name: :slack,
-      event_type: :reaction,
-      thread_id: thread_id(channel_id, ts),
-      channel_id: stringify(channel_id),
-      message_id: stringify(ts),
-      payload: %{
-        adapter_name: :slack,
-        thread_id: thread_id(channel_id, ts),
-        message_id: stringify(ts),
-        emoji: map_get(event, [:reaction, "reaction"]),
-        added: added?,
-        user: author_from_user_payload(%{"id" => map_get(event, [:user, "user"])}),
-        raw: event,
-        metadata: %{item: item}
-      },
-      raw: payload,
-      metadata: %{}
-    })
-  end
+  def format_webhook_response({:error, _}, _opts), do: WebhookResponse.error(400, %{error: "ingress_rejected"})
 
   defp verify_slack_signature(request, signing_secret, opts) do
     raw_body = raw_body(request, opts)
@@ -1371,130 +640,8 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp decode_payload_source(_), do: {:error, :unsupported_payload}
 
-  defp message_like_payload?(payload) when is_map(payload) do
-    normalize_event_type(map_get(payload, [:type, "type"])) in [:message, :app_mention]
-  end
-
-  defp slash_command_payload?(payload) when is_map(payload) do
-    is_binary(map_get(payload, [:command, "command"])) and
-      is_binary(map_get(payload, [:user_id, "user_id"]))
-  end
-
-  defp interactive_payload?(payload) when is_map(payload) do
-    map_get(payload, [:type, "type"]) in [
-      "block_actions",
-      "shortcut",
-      "message_action",
-      "view_submission",
-      "view_closed",
-      "block_suggestion"
-    ]
-  end
-
-  defp event_callback_payload?(payload) when is_map(payload) do
-    map_get(payload, [:type, "type"]) == "event_callback" and
-      is_map(map_get(payload, [:event, "event"]))
-  end
-
   defp url_verification_payload?(payload) when is_map(payload) do
     map_get(payload, [:type, "type"]) == "url_verification"
-  end
-
-  defp normalize_message_payload(payload) when is_map(payload) do
-    cond do
-      normalize_event_type(map_get(payload, [:type, "type"])) in [:message, :app_mention] ->
-        with message when is_map(message) <- unwrap_message_event(payload) do
-          {:ok, message,
-           %{
-             was_mentioned: normalize_event_type(map_get(payload, [:type, "type"])) == :app_mention,
-             extra: %{}
-           }}
-        else
-          nil -> {:error, :unsupported_message_type}
-        end
-
-      event_callback_payload?(payload) ->
-        event = map_get(payload, [:event, "event"]) || %{}
-
-        case normalize_event_type(map_get(event, [:type, "type"])) do
-          type when type in [:message, :app_mention] ->
-            case extract_event_message(event, payload) do
-              nil ->
-                {:error, :unsupported_message_type}
-
-              message ->
-                {:ok, message,
-                 %{
-                   was_mentioned: type == :app_mention,
-                   extra: %{event_id: map_get(payload, [:event_id, "event_id"])}
-                 }}
-            end
-
-          _ ->
-            {:error, :unsupported_message_type}
-        end
-
-      true ->
-        {:error, :unsupported_message_type}
-    end
-  end
-
-  defp normalize_message_payload(_), do: {:error, :unsupported_message_type}
-
-  defp extract_event_message(event, _payload) do
-    case map_get(event, [:subtype, "subtype"]) do
-      "message_changed" ->
-        map_get(event, [:message, "message"])
-
-      "message_deleted" ->
-        nil
-
-      _ ->
-        event
-    end
-  end
-
-  defp unwrap_message_event(payload) do
-    case map_get(payload, [:subtype, "subtype"]) do
-      "message_changed" -> map_get(payload, [:message, "message"])
-      "message_deleted" -> nil
-      _ -> payload
-    end
-  end
-
-  defp extract_media(message) when is_map(message) do
-    message
-    |> map_get([:files, "files"])
-    |> List.wrap()
-    |> Enum.map(&normalize_media/1)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp normalize_media(file) when is_map(file) do
-    url =
-      first_non_blank([
-        map_get(file, [:url_private_download, "url_private_download"]),
-        map_get(file, [:url_private, "url_private"])
-      ])
-
-    filename = file |> map_get([:name, "name"]) |> blank_to_nil()
-    media_type = file |> map_get([:mimetype, "mimetype"]) |> normalize_media_type()
-
-    if is_nil(url) do
-      nil
-    else
-      %{
-        kind: media_kind(file, media_type, filename, url),
-        url: url,
-        media_type: media_type,
-        filename: filename,
-        metadata: %{
-          id: map_get(file, [:id, "id"]),
-          name: filename,
-          size: map_get(file, [:size, "size"])
-        }
-      }
-    end
   end
 
   defp media_url(url) when is_binary(url) and url != "", do: {:ok, url}
@@ -1529,66 +676,6 @@ defmodule Jido.Chat.Slack.Adapter do
     end)
   end
 
-  defp media_kind(file, media_type, filename, url) do
-    media_kind_from_type(media_type) ||
-      media_kind_from_filetype(map_get(file, [:filetype, "filetype"])) ||
-      media_kind_from_extension(first_non_blank([filename, url])) ||
-      :file
-  end
-
-  defp media_kind_from_type(media_type) when is_binary(media_type) do
-    case canonical_media_type(media_type) do
-      "image/" <> _rest -> :image
-      "video/" <> _rest -> :video
-      "audio/" <> _rest -> :audio
-      _other -> :file
-    end
-  end
-
-  defp media_kind_from_type(_media_type), do: nil
-
-  defp media_kind_from_filetype(filetype) when is_binary(filetype) do
-    case filetype |> String.trim() |> String.trim_leading(".") |> String.downcase() do
-      normalized when normalized in @image_filetypes -> :image
-      normalized when normalized in @audio_filetypes -> :audio
-      normalized when normalized in @video_filetypes -> :video
-      _other -> nil
-    end
-  end
-
-  defp media_kind_from_filetype(_filetype), do: nil
-
-  defp media_kind_from_extension(reference) when is_binary(reference) do
-    reference
-    |> URI.parse()
-    |> Map.get(:path)
-    |> case do
-      path when is_binary(path) -> path |> Path.extname() |> String.trim_leading(".") |> String.downcase()
-      _other -> ""
-    end
-    |> media_kind_from_filetype()
-  end
-
-  defp media_kind_from_extension(_reference), do: nil
-
-  defp normalize_media_type(value) when is_binary(value) do
-    trimmed = String.trim(value)
-
-    if Regex.match?(@media_type_pattern, canonical_media_type(trimmed)),
-      do: trimmed,
-      else: nil
-  end
-
-  defp normalize_media_type(_value), do: nil
-
-  defp canonical_media_type(value) do
-    value
-    |> String.split(";", parts: 2)
-    |> hd()
-    |> String.trim()
-    |> String.downcase()
-  end
-
   defp first_non_blank(values), do: Enum.find_value(values, &blank_to_nil/1)
 
   defp blank_to_nil(value) when is_binary(value),
@@ -1596,41 +683,26 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp blank_to_nil(_value), do: nil
 
-  defp parse_mentions(text) when is_binary(text) do
-    Regex.scan(~r/<@([A-Z0-9]+)>/, text, return: :index)
-    |> Enum.map(fn
-      [{offset, length}, {user_offset, user_length}] ->
-        %{
-          user_id: binary_part(text, user_offset, user_length),
-          username: nil,
-          offset: offset,
-          length: length
-        }
-
-      _ ->
-        nil
-    end)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp parse_mentions(_), do: []
-
-  defp normalize_messages(messages, channel_id, thread_ts) do
-    Enum.flat_map(messages, fn raw ->
-      case transform_incoming(raw) do
-        {:ok, incoming} ->
-          [
-            Message.from_incoming(incoming,
-              adapter_name: :slack,
-              thread_id: thread_id(channel_id, thread_ts || incoming.external_thread_id)
-            )
-          ]
-
-        {:error, _reason} ->
-          []
-      end
+  defp normalize_messages(messages, room, thread) when is_list(messages) do
+    Enum.map(messages, fn message ->
+      portable_message(message, room)
+      |> Map.put_new("thread_id", stringify(thread || external_thread_id(message)))
+      |> compact()
     end)
   end
+
+  defp portable_message(message, room, fallback_id \\ nil) do
+    %{
+      "id" => stringify(map_get(message, [:ts, "ts"]) || fallback_id),
+      "room_id" => stringify(map_get(message, [:channel, "channel"]) || room),
+      "text" => message_text(message),
+      "thread_id" => external_thread_id(message),
+      "timestamp" => map_get(message, [:ts, "ts"])
+    }
+    |> compact()
+  end
+
+  defp compact(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 
   defp build_subject(channel_id, nil, channel, _transport_opts) do
     channel = normalize_struct(channel)
@@ -1889,16 +961,6 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp bounded_positive_integer(_value, _default, _maximum, error), do: {:error, error}
 
-  defp ensure_channel_id(%{} = raw_message, channel_id) do
-    if is_nil(map_get(raw_message, [:channel, "channel"])) do
-      Map.put(raw_message, :channel, stringify(channel_id))
-    else
-      raw_message
-    end
-  end
-
-  defp ensure_channel_id(raw_message, _channel_id), do: raw_message
-
   defp validate_upload(%FileUpload{path: path}) when is_binary(path) and path != "", do: :ok
 
   defp validate_upload(%FileUpload{data: data, filename: filename})
@@ -1933,33 +995,17 @@ defmodule Jido.Chat.Slack.Adapter do
   end
 
   defp upload_response(channel_id, %FileUpload{} = upload, result) do
-    file =
-      result
-      |> map_get([:files, "files"])
-      |> List.wrap()
-      |> List.first()
-      |> normalize_struct()
+    file = result |> map_get([:files, "files"]) |> List.wrap() |> List.first() |> normalize_struct()
+    timestamp = slack_file_share_ts(file, channel_id)
 
-    Response.new(%{
-      external_message_id: slack_file_share_ts(file, channel_id),
-      external_room_id: stringify(channel_id),
-      timestamp: slack_file_share_ts(file, channel_id),
-      channel_type: :slack,
-      status: :sent,
-      raw: result,
-      metadata:
-        %{
-          file_id: map_get(file, [:id, "id"]),
-          filename: map_get(file, [:name, "name"]),
-          size: map_get(file, [:size, "size"]),
-          url: map_get(file, [:url_private, "url_private"]),
-          content_type: map_get(file, [:mimetype, "mimetype"]),
-          upload_kind: upload.kind,
-          delivered_kind: slack_file_kind(file, upload.kind)
-        }
-        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-        |> Map.new()
-    })
+    %{
+      "id" => timestamp,
+      "room_id" => stringify(channel_id),
+      "timestamp" => timestamp,
+      "status" => "sent",
+      "text" => upload.metadata[:caption] || upload.metadata["caption"]
+    }
+    |> compact()
   end
 
   defp slack_file_share_ts(file, channel_id) when is_map(file) do
@@ -1982,49 +1028,15 @@ defmodule Jido.Chat.Slack.Adapter do
 
   defp slack_file_share_ts(_file, _channel_id), do: nil
 
-  defp slack_file_kind(file, fallback) do
-    case map_get(file, [:mimetype, "mimetype"]) do
-      <<"image/", _::binary>> -> :image
-      <<"audio/", _::binary>> -> :audio
-      <<"video/", _::binary>> -> :video
-      _ -> fallback
-    end
-  end
-
   defp maybe_put_kw(keyword, _key, nil), do: keyword
   defp maybe_put_kw(keyword, key, value), do: Keyword.put(keyword, key, value)
 
-  defp normalize_thread_summary(channel_id, raw_thread) when is_map(raw_thread) do
-    case transform_incoming(raw_thread) do
-      {:ok, incoming} ->
-        [
-          ThreadSummary.new(%{
-            id:
-              thread_id(
-                channel_id,
-                external_thread_id(raw_thread) || incoming.external_message_id
-              ),
-            last_reply_at: map_get(raw_thread, [:latest_reply, "latest_reply"]),
-            reply_count: map_get(raw_thread, [:reply_count, "reply_count"]) || 0,
-            root_message:
-              Message.from_incoming(incoming,
-                adapter_name: :slack,
-                thread_id:
-                  thread_id(
-                    channel_id,
-                    incoming.external_thread_id || incoming.external_message_id
-                  )
-              ),
-            metadata: %{raw: raw_thread}
-          })
-        ]
-
-      {:error, _reason} ->
-        []
-    end
+  defp normalize_thread_summary(channel_id, raw) when is_map(raw) do
+    id = map_get(raw, [:thread_ts, "thread_ts", :ts, "ts"])
+    [%{"id" => stringify(id), "room_id" => stringify(channel_id), "name" => message_text(raw)} |> compact()]
   end
 
-  defp normalize_thread_summary(_channel_id, _raw_thread), do: []
+  defp normalize_thread_summary(_channel_id, _raw), do: []
 
   defp external_thread_id(message) when is_map(message) do
     thread_ts = map_get(message, [:thread_ts, "thread_ts"])
@@ -2035,46 +1047,6 @@ defmodule Jido.Chat.Slack.Adapter do
       is_binary(thread_ts) -> thread_ts
       reply_count > 0 -> ts
       true -> nil
-    end
-  end
-
-  defp external_reply_to_id(message) when is_map(message) do
-    thread_ts = map_get(message, [:thread_ts, "thread_ts"])
-    ts = map_get(message, [:ts, "ts"])
-
-    if is_binary(thread_ts) and thread_ts != ts, do: thread_ts, else: nil
-  end
-
-  defp message_user_id(message) when is_map(message) do
-    map_get(message, [:user, "user"]) ||
-      bot_id(message)
-  end
-
-  defp message_username(message) when is_map(message) do
-    map_get(message, [:username, "username"]) ||
-      map_get(message, [:user_profile, "user_profile"])
-      |> maybe_get([:display_name, "display_name"])
-  end
-
-  defp message_display_name(message) when is_map(message) do
-    message_username(message) ||
-      map_get(message, [:user_profile, "user_profile"]) |> maybe_get([:real_name, "real_name"])
-  end
-
-  defp bot_id(message) do
-    case map_get(message, [:bot_id, "bot_id"]) do
-      nil -> nil
-      bot_id -> "bot:" <> to_string(bot_id)
-    end
-  end
-
-  defp parse_chat_type(message) do
-    case map_get(message, [:channel_type, "channel_type"]) do
-      "im" -> :dm
-      "mpim" -> :group
-      "group" -> :group
-      "channel" -> :channel
-      _ -> infer_chat_type_from_channel_id(map_get(message, [:channel, "channel"]))
     end
   end
 
@@ -2091,72 +1063,11 @@ defmodule Jido.Chat.Slack.Adapter do
   defp validate_history_direction(:backward), do: :ok
   defp validate_history_direction(_direction), do: {:error, :unsupported_direction}
 
-  defp author_from_user_payload(payload) when is_map(payload) do
-    %{
-      user_id: stringify(map_get(payload, [:id, "id"]) || "unknown"),
-      user_name:
-        map_get(payload, [:username, "username"]) ||
-          map_get(payload, [:name, "name"]) ||
-          stringify(map_get(payload, [:id, "id"]) || "unknown"),
-      full_name:
-        map_get(payload, [:real_name, "real_name"]) ||
-          map_get(payload, [:username, "username"]) ||
-          map_get(payload, [:name, "name"])
-    }
-  end
-
   defp options_loader(opts) do
-    case opts[:options_loader] || Application.get_env(:jido_chat_slack, :options_loader) do
-      loader when is_function(loader, 1) or is_function(loader, 2) ->
-        {:ok, loader}
-
-      {module, function, args} = loader
-      when is_atom(module) and is_atom(function) and is_list(args) ->
-        {:ok, loader}
-
-      nil ->
-        {:error,
-         OptionsLoadError.new(%{
-           code: "unsupported",
-           message: "No Slack options loader is configured"
-         })}
-
-      _other ->
-        {:error, :invalid_options_loader}
-    end
-  end
-
-  defp run_options_loader(loader, event, opts, timeout_ms) do
-    owner = self()
-    reference = make_ref()
-
-    {pid, monitor} =
-      spawn_monitor(fn ->
-        send(owner, {reference, invoke_options_loader(loader, event, opts)})
-      end)
-
-    receive do
-      {^reference, result} ->
-        Process.demonitor(monitor, [:flush])
-        normalize_loader_return(result)
-
-      {:DOWN, ^monitor, :process, ^pid, reason} ->
-        {:error, {:options_loader_exit, reason}}
-    after
-      timeout_ms ->
-        Process.exit(pid, :kill)
-
-        receive do
-          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
-        end
-
-        receive do
-          {^reference, _late_result} -> :ok
-        after
-          0 -> :ok
-        end
-
-        {:error, :timeout}
+    case opts[:options_loader] do
+      loader when is_function(loader, 1) or is_function(loader, 2) -> {:ok, loader}
+      {module, function, args} = loader when is_atom(module) and is_atom(function) and is_list(args) -> {:ok, loader}
+      _ -> {:error, :unsupported}
     end
   end
 
@@ -2174,67 +1085,10 @@ defmodule Jido.Chat.Slack.Adapter do
   defp normalize_loader_return(result) when is_map(result), do: {:ok, result}
   defp normalize_loader_return(other), do: {:error, {:invalid_options_loader_result, other}}
 
-  defp normalize_options_result(%OptionsLoadResult{} = result), do: {:ok, result}
-
-  defp normalize_options_result(result) when is_map(result) do
-    try do
-      {:ok, OptionsLoadResult.new(result)}
-    rescue
-      error -> {:error, {:invalid_options, Exception.message(error)}}
-    end
-  end
-
-  defp normalize_options_result(other), do: {:error, {:invalid_options, other}}
-
-  defp options_thread_id(nil, _message), do: nil
-
-  defp options_thread_id(channel_id, message),
-    do: thread_id(channel_id, external_thread_id(message))
-
   defp maybe_put_initial_comment(opts, nil), do: opts
 
   defp maybe_put_initial_comment(opts, text),
     do: Keyword.put_new(opts, :initial_comment, text)
-
-  defp extract_action_value(action) when is_map(action) do
-    map_get(action, [:value, "value"]) ||
-      map_get(action, [:selected_option, "selected_option"]) |> maybe_get([:value, "value"]) ||
-      map_get(action, [:selected_user, "selected_user"]) ||
-      map_get(action, [:selected_channel, "selected_channel"]) ||
-      map_get(action, [:selected_conversation, "selected_conversation"])
-  end
-
-  defp extract_action_value(_), do: nil
-
-  defp extract_modal_values(view) do
-    if is_map(view) do
-      view
-      |> map_get([:state, "state"])
-      |> maybe_get([:values, "values"])
-      |> normalize_struct()
-    else
-      %{}
-    end
-  end
-
-  defp first_action(payload) do
-    payload
-    |> map_get([:actions, "actions"])
-    |> List.wrap()
-    |> List.first()
-    |> normalize_struct()
-  end
-
-  defp decode_private_metadata(nil), do: %{}
-
-  defp decode_private_metadata(value) when is_binary(value) do
-    case Jason.decode(value) do
-      {:ok, metadata} when is_map(metadata) -> metadata
-      _ -> %{}
-    end
-  end
-
-  defp decode_private_metadata(_), do: %{}
 
   defp request_payload(%WebhookRequest{} = request) do
     case decode_request_payload(request) do
@@ -2305,17 +1159,6 @@ defmodule Jido.Chat.Slack.Adapter do
     end)
   end
 
-  defp synthetic_incoming(room_id, user_id, message_id, raw, event_type) do
-    Incoming.new(%{
-      external_room_id: room_id || "slack",
-      external_user_id: user_id,
-      external_message_id: message_id,
-      text: nil,
-      raw: normalize_struct(raw),
-      metadata: %{event_type: event_type}
-    })
-  end
-
   defp next_cursor(result) when is_map(result) do
     result
     |> map_get([:response_metadata, "response_metadata"])
@@ -2332,16 +1175,6 @@ defmodule Jido.Chat.Slack.Adapter do
       thread_ts -> Keyword.put_new(opts, :thread_ts, thread_ts)
     end
   end
-
-  defp normalize_event_type("message"), do: :message
-  defp normalize_event_type("app_mention"), do: :app_mention
-  defp normalize_event_type("reaction_added"), do: :reaction_added
-  defp normalize_event_type("reaction_removed"), do: :reaction_removed
-  defp normalize_event_type(other) when is_atom(other), do: other
-  defp normalize_event_type(_), do: :unknown
-
-  defp thread_id(channel_id, nil), do: "slack:#{channel_id}"
-  defp thread_id(channel_id, thread_ts), do: "slack:#{channel_id}:#{thread_ts}"
 
   defp transport(%{transport: transport}) when not is_nil(transport), do: transport
   defp transport(opts) when is_list(opts), do: Keyword.get(opts, :transport, ReqClient)
@@ -2390,7 +1223,7 @@ defmodule Jido.Chat.Slack.Adapter do
       sink_mfa: sink_mfa,
       sink_opts: [bridge_id: bridge_id],
       app_token:
-        map_get(ingress, [:app_token, "app_token"]) ||
+        opts[:app_token] || map_get(ingress, [:app_token, "app_token"]) ||
           map_get(ingress, [:socket_mode_app_token, "socket_mode_app_token"]) ||
           map_get(credentials, [:app_token, "app_token"]) ||
           map_get(credentials, [:socket_mode_app_token, "socket_mode_app_token"]),
