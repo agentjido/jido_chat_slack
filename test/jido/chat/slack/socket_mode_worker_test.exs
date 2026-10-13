@@ -19,6 +19,21 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
     end
   end
 
+  defmodule FailureSink do
+    def emit(test_pid, mode, delivery, _opts) do
+      send(test_pid, {:ordered, :sink})
+      send(test_pid, {:sink_emit, delivery, mode})
+
+      case mode do
+        :error -> {:error, :rejected}
+        :raise -> raise "sink failure"
+        :throw -> throw(:sink_failure)
+        :exit -> exit(:sink_failure)
+        :invalid -> :unexpected
+      end
+    end
+  end
+
   defmodule OpenClient do
     @behaviour Jido.Chat.Slack.SocketMode.Client
 
@@ -347,5 +362,106 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
     refute_received {:socket_send_text, _, _}
     SocketClient.close(socket)
     assert_receive {:socket_close, ^socket}
+  end
+
+  for response? <- [false, true], mode <- [:error, :raise, :throw, :exit, :invalid] do
+    test "sink #{mode} keeps acknowledgement order and the worker for response #{response?}" do
+      {:ok, responses} = Agent.start_link(fn -> [{:ok, "wss://slack.example/socket"}] end)
+
+      pid =
+        start_supervised!(
+          {SocketModeWorker,
+           bridge_id: "bridge_slack",
+           binding: captured_binding(),
+           sink_mfa: {FailureSink, :emit, [self(), unquote(mode)]},
+           open_client: OpenClient,
+           open_client_opts: [test_pid: self(), responses_agent: responses],
+           socket_client: SocketClient,
+           socket_client_opts: [test_pid: self()],
+           reconnect_interval_ms: 60_000}
+        )
+
+      assert_receive {:open_socket, _}
+      assert_receive {:socket_connect, _, socket}
+
+      envelope = %{
+        "type" => "events_api",
+        "envelope_id" => "failure",
+        "accepts_response_payload" => unquote(response?),
+        "payload" => %{
+          "type" => "event_callback",
+          "event_id" => "Ev1",
+          "event" => %{"type" => "message", "channel" => "C1", "user" => "U1", "ts" => "1.01", "text" => "hello"}
+        }
+      }
+
+      send(pid, {:socket_mode, socket, {:text, Jason.encode!(envelope)}})
+      assert_receive {:ordered, first}
+      assert_receive {:ordered, second}
+      assert [first, second] == if(unquote(response?), do: [:sink, :ack], else: [:ack, :sink])
+      assert_receive {:sink_emit, %Delivery{signals: [_]}, mode}
+      assert mode == unquote(mode)
+      assert_receive {:ack_call, ack}
+      assert Jason.decode!(ack) == %{"envelope_id" => "failure"}
+      assert_receive {:socket_send_text, ^socket, ^ack}
+      assert :sys.get_state(pid).socket == socket
+      refute_received {:ordered, _}
+      refute_received {:sink_emit, _, _}
+      refute_received {:ack_call, _}
+      SocketClient.close(socket)
+      assert_receive {:socket_close, ^socket}
+    end
+  end
+
+  for response? <- [false, true], limit <- [:count, :failures, :aggregate] do
+    test "complete #{limit} rejection has zero sink and ack calls for response #{response?}" do
+      {:ok, responses} = Agent.start_link(fn -> [{:ok, "wss://slack.example/socket"}] end)
+      binding = captured_binding()
+
+      pid =
+        start_supervised!(
+          {SocketModeWorker,
+           bridge_id: "bridge_slack",
+           binding: binding,
+           sink_mfa: {Sink, :emit, [self()]},
+           open_client: OpenClient,
+           open_client_opts: [test_pid: self(), responses_agent: responses],
+           socket_client: SocketClient,
+           socket_client_opts: [test_pid: self()],
+           reconnect_interval_ms: 60_000}
+        )
+
+      assert_receive {:open_socket, _}
+      assert_receive {:socket_connect, _, socket}
+
+      actions =
+        case unquote(limit) do
+          :count -> Enum.map(1..101, &%{"action_id" => to_string(&1)})
+          :failures -> Enum.map(1..21, &%{"value" => to_string(&1)})
+          :aggregate -> Enum.map(1..60, &%{"action_id" => to_string(&1), "value" => String.duplicate("x", 20_000)})
+        end
+
+      envelope = %{
+        "envelope_id" => "limit",
+        "accepts_response_payload" => unquote(response?),
+        "payload" => %{
+          "type" => "block_actions",
+          "channel" => %{"id" => "C1"},
+          "trigger_id" => "private-trigger",
+          "actions" => actions
+        }
+      }
+
+      send(pid, {:socket_mode, socket, {:text, Jason.encode!(envelope)}})
+      _ = :sys.get_state(pid)
+      refute_received {:ordered, _}
+      refute_received {:sink_emit, _, _}
+      refute_received {:ack_call, _}
+      refute_received {:socket_send_text, _, _}
+      resources = Enum.filter(:ets.tab2list(binding.resources), &(elem(elem(&1, 0), 0) == :resource))
+      assert [{{:resource, _}, _, "result", nil, _, :cancelled}] = resources
+      SocketClient.close(socket)
+      assert_receive {:socket_close, ^socket}
+    end
   end
 end

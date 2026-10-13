@@ -213,6 +213,10 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
   defp invoke_sink({module, function, base_args}, payload, opts)
        when is_atom(module) and is_atom(function) and is_list(base_args) and is_list(opts) do
     apply(module, function, base_args ++ [payload, opts])
+  rescue
+    _ -> {:error, :sink_failed}
+  catch
+    _, _ -> {:error, :sink_failed}
   end
 
   defp invoke_sink(_sink_mfa, _payload, _opts), do: {:error, :invalid_sink_mfa}
