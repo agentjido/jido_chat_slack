@@ -3,19 +3,22 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
   Bridge-ingress worker for Slack Socket Mode envelopes.
 
   The worker opens a Socket Mode connection, acknowledges envelopes, and emits
-  the inner payloads through `sink_mfa` using `:payload` ingress so the runtime
-  can reuse the adapter's existing event normalization.
+  complete native deliveries through the typed sink. Ordinary events retain
+  acknowledgement before the sink; response-bearing envelopes retain the reverse
+  order. Both paths validate the complete payload before acknowledgement.
   """
 
   use GenServer
 
   alias Jido.Chat.Slack.InteractionResponse
+  alias Jido.Chat.Binding
   alias Jido.Chat.Slack.SocketMode.{ReqClient, WebSockexClient}
 
   @type sink_mfa :: {module(), atom(), [term()]}
 
   @type state :: %{
           bridge_id: String.t(),
+          binding: Binding.t(),
           sink_mfa: sink_mfa(),
           sink_opts: keyword(),
           app_token: String.t(),
@@ -44,8 +47,11 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
     bridge_id = Keyword.fetch!(opts, :bridge_id)
     sink_mfa = Keyword.fetch!(opts, :sink_mfa)
 
+    binding = Keyword.fetch!(opts, :binding)
+    %Binding{} = binding
+
     app_token =
-      opts[:app_token] || Application.get_env(:jido_chat_slack, :slack_app_token) ||
+      binding.options[:app_token] ||
         raise(
           ArgumentError,
           "missing Slack app token; pass :app_token option or configure :jido_chat_slack, :slack_app_token"
@@ -55,6 +61,7 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
 
     state = %{
       bridge_id: bridge_id,
+      binding: binding,
       sink_mfa: sink_mfa,
       sink_opts: Keyword.get(opts, :sink_opts, []),
       app_token: app_token,
@@ -156,31 +163,26 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
     end
   end
 
-  defp route_payload_envelope(state, envelope, raw_payload) do
+  defp route_payload_envelope(state, envelope, _raw_payload) do
     case map_get(envelope, [:payload, "payload"]) do
       payload when is_map(payload) ->
-        if accepts_response_payload?(envelope) do
-          sink_result =
-            invoke_sink(state.sink_mfa, payload, build_sink_opts(state, envelope, raw_payload))
+        case Jido.Chat.normalize_event(state.binding, envelope) do
+          {:ok, delivery} ->
+            if accepts_response_payload?(envelope) do
+              sink_result = invoke_sink(state.sink_mfa, delivery, state.sink_opts)
+              acknowledge_envelope(state, envelope, sink_result)
+            else
+              next_state = acknowledge_envelope(state, envelope, nil)
+              _ = invoke_sink(next_state.sink_mfa, delivery, next_state.sink_opts)
+              next_state
+            end
 
-          acknowledge_envelope(state, envelope, sink_result)
-        else
-          state
-          |> acknowledge_envelope(envelope, nil)
-          |> then(fn next_state ->
-            _ =
-              invoke_sink(
-                next_state.sink_mfa,
-                payload,
-                build_sink_opts(next_state, envelope, raw_payload)
-              )
-
-            next_state
-          end)
+          {:error, _} ->
+            state
         end
 
       _payload ->
-        acknowledge_envelope(state, envelope, nil)
+        state
     end
   end
 
@@ -203,23 +205,6 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
       _other ->
         state
     end
-  end
-
-  defp build_sink_opts(state, envelope, raw_payload) do
-    Keyword.merge(
-      state.sink_opts,
-      mode: :payload,
-      method: "SOCKET",
-      path: socket_path(state.path_prefix, map_get(envelope, [:type, "type"])),
-      raw_body: raw_payload,
-      request_metadata: %{
-        source: :socket_mode,
-        socket_envelope: envelope,
-        socket_envelope_id: map_get(envelope, [:envelope_id, "envelope_id"]),
-        socket_envelope_type: map_get(envelope, [:type, "type"]),
-        accepts_response_payload: map_get(envelope, [:accepts_response_payload, "accepts_response_payload"]) == true
-      }
-    )
   end
 
   defp response_builder_opts(%{response_builder: nil}), do: []
@@ -281,23 +266,6 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
     Process.cancel_timer(state.reconnect_timer_ref)
     %{state | reconnect_timer_ref: nil}
   end
-
-  defp socket_path(path_prefix, type) do
-    String.trim_trailing(path_prefix, "/") <> "/" <> socket_path_segment(type)
-  end
-
-  defp socket_path_segment(type) when is_binary(type) do
-    type
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/u, "_")
-    |> String.trim("_")
-    |> case do
-      "" -> "event"
-      value -> value
-    end
-  end
-
-  defp socket_path_segment(_type), do: "event"
 
   defp accepts_response_payload?(envelope) do
     map_get(envelope, [:accepts_response_payload, "accepts_response_payload"]) == true

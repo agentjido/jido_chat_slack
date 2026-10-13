@@ -2,9 +2,11 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
   use ExUnit.Case, async: false
 
   alias Jido.Chat.Slack.{Adapter, SocketModeWorker}
+  alias Jido.Chat.Delivery
 
   defmodule Sink do
     def emit(test_pid, payload, opts) do
+      send(test_pid, {:ordered, :sink})
       send(test_pid, {:sink_emit, payload, opts})
       {:ok, :accepted}
     end
@@ -40,6 +42,7 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
     @impl true
     def connect(url, owner, opts) do
       test_pid = Keyword.fetch!(opts, :test_pid)
+      Process.put({__MODULE__, :test_pid}, test_pid)
       socket = spawn(fn -> loop(owner, test_pid) end)
 
       send(test_pid, {:socket_connect, url, socket})
@@ -50,6 +53,11 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
 
     @impl true
     def send_text(socket, payload) do
+      if test_pid = Process.get({__MODULE__, :test_pid}) do
+        send(test_pid, {:ordered, :ack})
+        send(test_pid, {:ack_call, payload})
+      end
+
       send(socket, {:send_text, payload})
       :ok
     end
@@ -74,14 +82,20 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
     end
   end
 
+  defp captured_binding do
+    {:ok, binding} = Jido.Chat.bind(Adapter, id: "bridge_slack", token: "fixture-token", app_token: "xapp-test")
+    binding
+  end
+
   test "adapter listener_child_specs/2 returns expected webhook/socket_mode specs" do
     assert {:ok, []} = Adapter.listener_child_specs("bridge_slack", ingress: %{mode: "webhook"})
 
-    assert {:error, :invalid_sink_mfa} =
+    assert {:error, :invalid_binding} =
              Adapter.listener_child_specs("bridge_slack", ingress: %{mode: "socket_mode"})
 
     assert {:ok, [spec]} =
              Adapter.listener_child_specs("bridge_slack",
+               binding: captured_binding(),
                ingress: %{
                  mode: "socket_mode",
                  app_token: "xapp-test",
@@ -102,6 +116,7 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
       start_supervised(
         {SocketModeWorker,
          bridge_id: "bridge_slack",
+         binding: captured_binding(),
          sink_mfa: {Sink, :emit, [self()]},
          app_token: "xapp-test",
          open_client: OpenClient,
@@ -137,14 +152,11 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
     assert_receive {:socket_send_text, ^socket, ack_payload}, 200
     assert Jason.decode!(ack_payload) == %{"envelope_id" => "env-1"}
 
-    assert_receive {:sink_emit, payload, opts}, 200
-    assert payload["type"] == "event_callback"
-    assert opts[:mode] == :payload
-    assert opts[:method] == "SOCKET"
-    assert opts[:path] == "/socket_mode/events_api"
-    assert opts[:raw_body] == raw_envelope
-    assert opts[:request_metadata][:source] == :socket_mode
-    assert opts[:request_metadata][:socket_envelope_id] == "env-1"
+    assert_receive {:sink_emit, %Delivery{signals: [fact]}, opts}, 200
+    assert fact.type == "jido.chat.message.received"
+    assert fact.data["mentioned"]
+    assert opts == []
+    refute Map.has_key?(fact.data, "raw")
   end
 
   test "socket mode worker reconnects after Slack requests a disconnect" do
@@ -160,6 +172,7 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
       start_supervised(
         {SocketModeWorker,
          bridge_id: "bridge_slack",
+         binding: captured_binding(),
          sink_mfa: {Sink, :emit, [self()]},
          app_token: "xapp-test",
          open_client: OpenClient,
@@ -197,6 +210,7 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
       start_supervised(
         {SocketModeWorker,
          bridge_id: "bridge_slack",
+         binding: captured_binding(),
          sink_mfa: {ReplySink, :emit, [self()]},
          app_token: "xapp-test",
          open_client: OpenClient,
@@ -218,14 +232,18 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
         "payload" => %{
           "type" => "view_submission",
           "user" => %{"id" => "U123"},
-          "view" => %{"id" => "V123", "callback_id" => "feedback"}
+          "view" => %{
+            "id" => "V123",
+            "callback_id" => "feedback",
+            "private_metadata" => Jason.encode!(%{"channel_id" => "C123"})
+          }
         }
       })
 
     send(pid, {:socket_mode, socket, {:text, raw_envelope}})
 
-    assert_receive {:sink_emit, payload, _opts}, 200
-    assert payload["type"] == "view_submission"
+    assert_receive {:sink_emit, %Delivery{signals: [fact]}, _opts}, 200
+    assert fact.type == "jido.chat.modal.submitted"
 
     assert_receive {:socket_send_text, ^socket, ack_payload}, 200
 
@@ -233,5 +251,101 @@ defmodule Jido.Chat.Slack.SocketModeWorkerTest do
              "envelope_id" => "env-inline",
              "payload" => %{"response_action" => "clear"}
            }
+  end
+
+  test "ordinary and response-bearing envelopes preserve their declared acknowledgement order" do
+    for response? <- [false, true] do
+      {:ok, responses} = Agent.start_link(fn -> [{:ok, "wss://slack.example/socket"}] end)
+
+      {:ok, pid} =
+        SocketModeWorker.start_link(
+          bridge_id: "bridge_slack",
+          binding: captured_binding(),
+          sink_mfa: {Sink, :emit, [self()]},
+          open_client: OpenClient,
+          open_client_opts: [test_pid: self(), responses_agent: responses],
+          socket_client: SocketClient,
+          socket_client_opts: [test_pid: self()],
+          reconnect_interval_ms: 60_000
+        )
+
+      assert_receive {:open_socket, _}
+      assert_receive {:socket_connect, _, socket}
+
+      envelope = %{
+        "type" => "events_api",
+        "envelope_id" => "ordered",
+        "accepts_response_payload" => response?,
+        "payload" => %{
+          "type" => "event_callback",
+          "event_id" => "Ev1",
+          "event" => %{"type" => "message", "channel" => "C1", "user" => "U1", "ts" => "1.01", "text" => "hello"}
+        }
+      }
+
+      send(pid, {:socket_mode, socket, {:text, Jason.encode!(envelope)}})
+
+      assert_receive {:ordered, first}
+      assert_receive {:ordered, second}
+      assert [first, second] == if(response?, do: [:sink, :ack], else: [:ack, :sink])
+
+      if response? do
+        assert_receive {:sink_emit, %Delivery{}, _}
+        assert_receive {:ack_call, _}
+      else
+        assert_receive {:ack_call, _}
+        assert_receive {:sink_emit, %Delivery{}, _}
+      end
+
+      _ = :sys.get_state(pid)
+      assert_receive {:socket_send_text, ^socket, _}
+      GenServer.stop(pid)
+      SocketClient.close(socket)
+      Agent.stop(responses)
+      assert_receive {:socket_close, ^socket}
+    end
+  end
+
+  test "whole-payload size failure prevents acknowledgement and every sink call" do
+    {:ok, responses} = Agent.start_link(fn -> [{:ok, "wss://slack.example/socket"}] end)
+
+    {:ok, pid} =
+      start_supervised(
+        {SocketModeWorker,
+         bridge_id: "bridge_slack",
+         binding: captured_binding(),
+         sink_mfa: {Sink, :emit, [self()]},
+         open_client: OpenClient,
+         open_client_opts: [test_pid: self(), responses_agent: responses],
+         socket_client: SocketClient,
+         socket_client_opts: [test_pid: self()],
+         reconnect_interval_ms: 60_000}
+      )
+
+    assert_receive {:open_socket, _}
+    assert_receive {:socket_connect, _, socket}
+
+    envelope = %{
+      "type" => "events_api",
+      "envelope_id" => "large",
+      "payload" => %{
+        "type" => "event_callback",
+        "event" => %{
+          "type" => "message",
+          "channel" => "C1",
+          "user" => "U1",
+          "ts" => "1.01",
+          "text" => String.duplicate("x", 262_144)
+        }
+      }
+    }
+
+    send(pid, {:socket_mode, socket, {:text, Jason.encode!(envelope)}})
+    _ = :sys.get_state(pid)
+    refute_received {:ack_call, _}
+    refute_received {:sink_emit, _, _}
+    refute_received {:socket_send_text, _, _}
+    SocketClient.close(socket)
+    assert_receive {:socket_close, ^socket}
   end
 end
