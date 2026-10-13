@@ -100,6 +100,14 @@ defmodule Jido.Chat.Slack.OperationMatrixTest do
     defp response(_, _), do: {:ok, true}
   end
 
+  defmodule MalformedPages do
+    def list_threads(_room, _opts),
+      do: {:ok, %{"threads" => [%{"ts" => "1.01"}, "invalid", %{"ts" => "1.02"}], "has_more" => false}}
+
+    def fetch_messages(_room, _opts),
+      do: {:ok, %{"messages" => [%{"ts" => "1.01"}, "invalid", %{"ts" => "1.02"}], "has_more" => false}}
+  end
+
   setup do
     caller = self()
 
@@ -216,6 +224,18 @@ defmodule Jido.Chat.Slack.OperationMatrixTest do
       assert result.data["result"]["kind"] == kind
       assert result.data["result"]["id"] == (thread || "C1")
       assert calls() == methods
+    end
+  end
+
+  test "malformed page items fail the whole query without dropping an item" do
+    {:ok, binding} = Jido.Chat.bind(Adapter, id: "malformed-pages", token: "fixture-token", transport: MalformedPages)
+
+    for operation <- [:fetch_messages, :fetch_channel_messages, :list_threads] do
+      parent = request(binding, operation)
+      assert {:ok, failed} = Jido.Chat.execute(binding, parent)
+      assert failed.type == "jido.chat.operation.failed"
+      assert failed.data["code"] == "invalid_provider_result"
+      assert {:ok, ^failed} = Jido.Chat.execute(binding, parent)
     end
   end
 

@@ -520,15 +520,20 @@ defmodule Jido.Chat.Slack.Adapter do
 
     with :ok <- validate_history_direction(opts.direction),
          {:ok, result} <-
-           transport(opts).fetch_messages(channel_id, FetchOptions.transport_opts(opts)) do
+           transport(opts).fetch_messages(channel_id, FetchOptions.transport_opts(opts)),
+         entries when is_list(entries) <- map_get(result, [:messages, "messages"]) || [],
+         true <- Enum.all?(entries, &is_map/1) do
       thread_ts = opts.thread_ts
 
       {:ok,
        %{
-         "messages" => normalize_messages(map_get(result, [:messages, "messages"]) || [], channel_id, thread_ts),
+         "messages" => normalize_messages(entries, channel_id, thread_ts),
          "next_cursor" => next_cursor(result),
          "complete" => map_get(result, [:has_more, "has_more"]) == false or is_nil(next_cursor(result))
        }}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_provider_result}
     end
   end
 
@@ -550,11 +555,11 @@ defmodule Jido.Chat.Slack.Adapter do
 
     with :ok <- validate_history_direction(fetch_opts.direction),
          {:ok, result} <-
-           transport(fetch_opts).list_threads(channel_id, FetchOptions.transport_opts(fetch_opts)) do
+           transport(fetch_opts).list_threads(channel_id, FetchOptions.transport_opts(fetch_opts)),
+         entries when is_list(entries) <- map_get(result, [:threads, "threads"]) || [],
+         true <- Enum.all?(entries, &is_map/1) do
       threads =
-        result
-        |> map_get([:threads, "threads"])
-        |> List.wrap()
+        entries
         |> Enum.flat_map(&normalize_thread_summary(channel_id, &1))
 
       {:ok,
@@ -563,6 +568,9 @@ defmodule Jido.Chat.Slack.Adapter do
          "next_cursor" => next_cursor(result),
          "complete" => map_get(result, [:has_more, "has_more"]) == false or is_nil(next_cursor(result))
        }}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_provider_result}
     end
   end
 
