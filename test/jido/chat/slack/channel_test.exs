@@ -2,15 +2,47 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   use ExUnit.Case, async: true
 
   alias Jido.Chat
-  alias Jido.Chat.Adapter, as: ChatAdapter
-  alias Jido.Chat.FileUpload
+  alias Jido.Chat.{FileUpload, Handlers, Resources}
   alias Jido.Chat.Media
-  alias Jido.Chat.MessageSubject
-  alias Jido.Chat.Participant
-  alias Jido.Chat.PostPayload
-  alias Jido.Chat.Thread
   alias Jido.Chat.UserInfo
   alias Jido.Chat.Slack.Adapter
+
+  defp captured_binding(extra \\ []) do
+    {:ok, binding} =
+      Chat.bind(
+        Adapter,
+        Keyword.merge(
+          [
+            id: "surface",
+            token: "fixture-token",
+            transport: Jido.Chat.Slack.AdapterSurfaceTest.MockTransport,
+            bot_user_id: "Ubot"
+          ],
+          extra
+        )
+      )
+
+    binding
+  end
+
+  defp native_message(payload) do
+    binding = captured_binding()
+    {:ok, %{signals: [fact]}} = Chat.normalize_event(binding, payload)
+    {binding, fact}
+  end
+
+  defp private_media(binding, fact) do
+    Enum.map(fact.data["media"], fn media ->
+      {:ok, value} = Resources.resolve(binding, media["resource_ref"])
+      value
+    end)
+  end
+
+  defp route(binding, handlers, payload) do
+    with {:ok, unit} <- Chat.normalize_event(binding, payload),
+         {:ok, handlers, _} <- Handlers.accept(handlers, binding, unit),
+         do: {:ok, handlers, unit.signals}
+  end
 
   setup_all do
     Code.ensure_loaded!(Adapter)
@@ -391,7 +423,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
 
   test "fetch_subject/2 returns channel and thread subjects" do
     assert {:ok,
-            %MessageSubject{
+            %{
               type: "slack_channel",
               id: "C123",
               title: "Release coordination",
@@ -399,7 +431,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
             }} = Adapter.fetch_subject("C123", transport: MockTransport)
 
     assert {:ok,
-            %MessageSubject{
+            %{
               type: "slack_thread",
               id: "1706745600.000100",
               title: "single",
@@ -418,12 +450,16 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
 
   test "get_thread_participants/2 follows cursors, de-duplicates users, and includes bots" do
     assert {:ok,
-            [
-              %Participant{id: "U1", type: :human},
-              %Participant{id: "U2", type: :human},
-              %Participant{id: "B1", type: :agent}
-            ]} =
-             ChatAdapter.get_thread_participants(Adapter, "C123",
+            %{
+              participants: [
+                %UserInfo{id: "U1", is_bot: false},
+                %UserInfo{id: "U2", is_bot: false},
+                %UserInfo{id: "B1", is_bot: true}
+              ],
+              complete: false,
+              scope: "observed"
+            }} =
+             Adapter.get_thread_participants("C123",
                external_thread_id: "1",
                transport: PaginatedParticipantsTransport,
                limit: 3,
@@ -435,15 +471,15 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   end
 
   test "get_thread_participants/2 enforces participant and page limits" do
-    assert {:ok, [%Participant{id: "U1"}]} =
-             ChatAdapter.get_thread_participants(Adapter, "C123",
+    assert {:ok, %{participants: [%UserInfo{id: "U1"}], complete: false}} =
+             Adapter.get_thread_participants("C123",
                external_thread_id: "1",
                transport: PaginatedParticipantsTransport,
                limit: 1
              )
 
     assert {:error, :participant_page_limit_exceeded} =
-             ChatAdapter.get_thread_participants(Adapter, "C123",
+             Adapter.get_thread_participants("C123",
                external_thread_id: "1",
                transport: PaginatedParticipantsTransport,
                limit: 3,
@@ -451,33 +487,32 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
              )
   end
 
-  test "thread handles pass the external Slack thread timestamp to resource helpers" do
-    thread =
-      Thread.new(%{
-        id: "slack:C123:1",
-        adapter_name: :slack,
-        adapter: Adapter,
-        external_room_id: "C123",
-        external_thread_id: "1"
+  test "native thread requests pass the external Slack timestamp to resource helpers" do
+    subject_binding = captured_binding()
+    request = Jido.Chat.Signal.FetchSubject.new!(%{"request_id" => "subject", "room_id" => "C123", "thread_id" => "1"})
+    assert {:ok, subject} = Chat.execute(subject_binding, request)
+    assert subject.data["result"]["id"] == "1"
+    assert subject.data["result"]["kind"] == "thread"
+    participants_binding = captured_binding(transport: PaginatedParticipantsTransport)
+
+    request =
+      Jido.Chat.Signal.GetThreadParticipants.new!(%{
+        "request_id" => "participants",
+        "room_id" => "C123",
+        "thread_id" => "1"
       })
 
-    assert {:ok, %MessageSubject{id: "1", type: "slack_thread"}} =
-             Thread.fetch_subject(thread, transport: MockTransport)
-
-    assert {:ok,
-            [
-              %Participant{id: "U1"},
-              %Participant{id: "U2"},
-              %Participant{id: "B1"}
-            ]} = Thread.participants(thread, transport: PaginatedParticipantsTransport, limit: 3)
+    assert {:ok, result} = Chat.execute(participants_binding, request)
+    assert Enum.map(result.data["result"]["participants"], & &1["id"]) == ["U1", "U2", "B1"]
+    assert result.data["result"]["complete"] == false
   end
 
   test "mark_as_read/3 delegates an idempotent Slack receipt" do
-    assert :ok =
-             ChatAdapter.mark_as_read(Adapter, "C123", "1706745600.000100", transport: MockTransport)
+    assert {:ok, true} =
+             Adapter.mark_as_read("C123", "1706745600.000100", transport: MockTransport)
 
-    assert :ok =
-             ChatAdapter.mark_as_read(Adapter, "C123", "1706745600.000100", transport: MockTransport)
+    assert {:ok, true} =
+             Adapter.mark_as_read("C123", "1706745600.000100", transport: MockTransport)
 
     assert_received {:mark_as_read, "C123", "1706745600.000100"}
     assert_received {:mark_as_read, "C123", "1706745600.000100"}
@@ -492,13 +527,13 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       "ts" => "1706745600.000100"
     }
 
-    assert {:ok, incoming} = Adapter.transform_incoming(message)
-    assert incoming.external_room_id == "C123"
-    assert incoming.external_user_id == "U123"
-    assert incoming.text == "Hello <@U999>"
-    assert incoming.chat_type == :channel
-    assert incoming.channel_meta.adapter_name == :slack
-    assert length(incoming.mentions) == 1
+    {_binding, incoming} = native_message(message)
+    assert incoming.data["room_id"] == "C123"
+    assert incoming.data["sender"]["id"] == "U123"
+    assert incoming.data["text"] == "Hello <@U999>"
+    assert incoming.data["conversation_kind"] == "channel"
+    assert Adapter.channel_type() == :slack
+    assert length(incoming.data["mentions"]) == 1
   end
 
   test "transform_incoming/1 extracts files as media" do
@@ -553,10 +588,10 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       ]
     }
 
-    assert {:ok, incoming} = Adapter.transform_incoming(message)
+    {binding, incoming} = native_message(message)
 
     assert [explicit, filename_fallback, filetype_fallback, unknown, signed_url, misleading] =
-             incoming.media
+             private_media(binding, incoming)
 
     assert explicit.kind == :image
     assert explicit.url == "https://files.slack.com/image-download.png"
@@ -593,8 +628,8 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       "files" => [%{"id" => "F1", "url_private" => "https://files.slack.com/file.txt"}]
     }
 
-    assert {:ok, current} = Adapter.transform_incoming(current_message)
-    assert current.text == "Current file comment"
+    {_binding, current} = native_message(current_message)
+    assert current.data["text"] == "Current file comment"
 
     legacy_message =
       current_message
@@ -603,8 +638,8 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
         "comment" => "Legacy file comment"
       })
 
-    assert {:ok, legacy} = Adapter.transform_incoming(legacy_message)
-    assert legacy.text == "Legacy file comment"
+    {_binding, legacy} = native_message(legacy_message)
+    assert legacy.data["text"] == "Legacy file comment"
   end
 
   test "fetch_media/2 downloads raw URLs and media references with a bot token" do
@@ -633,22 +668,22 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
   test "send/edit/delete/fetch metadata methods work" do
     assert {:ok, result} = Adapter.send_message("C123", "hi", transport: MockTransport)
     assert_received {:send_message, "C123", "hi", []}
-    assert result.message_id == "1706745600.000100"
+    assert result["id"] == "1706745600.000100"
 
     assert {:ok, edited} =
              Adapter.edit_message("C123", "1706745600.000100", "updated", transport: MockTransport)
 
     assert_received {:edit_message, "C123", "1706745600.000100", "updated"}
-    assert edited.message_id == "1706745600.000100"
+    assert edited["id"] == "1706745600.000100"
 
     assert :ok = Adapter.delete_message("C123", "1706745600.000100", transport: MockTransport)
     assert_received {:delete_message, "C123", "1706745600.000100"}
 
     assert {:ok, info} = Adapter.fetch_metadata("C123", transport: MockTransport)
     assert_received {:fetch_metadata, "C123"}
-    assert info.id == "C123"
-    assert info.name == "general"
-    assert info.member_count == 12
+    assert info["id"] == "C123"
+    assert info["name"] == "general"
+    assert info["member_count"] == 12
   end
 
   test "send_message/3 maps generic thread routing to slack thread_ts" do
@@ -685,12 +720,12 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
                caption: "path caption"
              )
 
-    assert path_result.external_message_id == "1706745609.000900"
-    assert path_result.external_room_id == "C123"
-    assert path_result.metadata.file_id == "F123"
-    assert path_result.metadata.filename == Path.basename(path)
-    assert path_result.metadata.upload_kind == :file
-    assert path_result.metadata.delivered_kind == :file
+    assert path_result["id"] == "1706745609.000900"
+    assert path_result["room_id"] == "C123"
+    assert path_result["metadata"].file_id == "F123"
+    assert path_result["metadata"].filename == Path.basename(path)
+    assert path_result["metadata"].upload_kind == :file
+    assert path_result["metadata"].delivered_kind == :file
     assert_received {:send_file, "C123", upload, path_opts}
     assert upload.path == path
     assert Keyword.get(path_opts, :initial_comment) == "path caption"
@@ -708,9 +743,9 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
                external_thread_id: "1706745600.000100"
              )
 
-    assert bytes_result.external_message_id == "1706745609.000900"
-    assert bytes_result.metadata.filename == "bytes.txt"
-    assert bytes_result.metadata.content_type == "text/plain"
+    assert bytes_result["id"] == "1706745609.000900"
+    assert bytes_result["metadata"].filename == "bytes.txt"
+    assert bytes_result["metadata"].content_type == "text/plain"
     assert_received {:send_file, "C123", upload, bytes_opts}
     assert upload.data == "slack bytes upload\n"
     assert Keyword.get(bytes_opts, :thread_ts) == "1706745600.000100"
@@ -751,8 +786,8 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
              Adapter.post_ephemeral("C123", "U123", "secret", transport: MockTransport)
 
     assert_received {:post_ephemeral, "C123", "U123", "secret"}
-    assert ephemeral.used_fallback == false
-    assert ephemeral.thread_id == "slack:C123:1706745602.000300"
+    assert ephemeral["room_id"] == "C123"
+    assert ephemeral["id"] == "1706745602.000300"
 
     assert :ok =
              Adapter.add_reaction("C123", "1706745600.000100", ":wave:", transport: MockTransport)
@@ -771,12 +806,12 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
              )
 
     assert_received {:fetch_messages, "C123"}
-    assert length(page.messages) == 1
-    assert page.next_cursor == "cursor-1"
+    assert length(page["messages"]) == 1
+    assert page["next_cursor"] == "cursor-1"
 
     assert {:ok, threads} = Adapter.list_threads("C123", transport: MockTransport)
     assert_received {:list_threads, "C123"}
-    assert length(threads.threads) == 1
+    assert length(threads["threads"]) == 1
   end
 
   test "fetch_message/3 preserves channel id when Slack omits it from the payload" do
@@ -784,30 +819,34 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
              Adapter.fetch_message("C123", "1706745600.000100", transport: ChannelOmittingTransport)
 
     assert_received {:fetch_message_without_channel, "C123", "1706745600.000100"}
-    assert message.external_room_id == "C123"
-    assert message.channel_id == "C123"
-    assert message.external_message_id == "1706745600.000100"
+    assert message["room_id"] == "C123"
+    assert message["room_id"] == "C123"
+    assert message["id"] == "1706745600.000100"
   end
 
-  test "core post_message/4 routes a single file through Slack send_file/3" do
-    payload =
-      PostPayload.new(%{
-        text: "slack canonical upload",
-        files: [
-          %{
-            kind: :file,
-            data: "slack canonical bytes\n",
-            filename: "canonical.txt",
-            media_type: "text/plain"
-          }
-        ]
+  test "native post_message routes a single file through Slack send_file" do
+    binding = captured_binding()
+
+    file =
+      FileUpload.new(%{
+        kind: :file,
+        data: "slack canonical bytes\n",
+        filename: "canonical.txt",
+        media_type: "text/plain"
       })
 
-    assert {:ok, response} =
-             ChatAdapter.post_message(Adapter, "C123", payload, transport: MockTransport)
+    {:ok, ref} = Chat.put_resource(binding, "file", file)
 
-    assert response.external_message_id == "1706745609.000900"
-    assert response.metadata.file_id == "F123"
+    request =
+      Jido.Chat.Signal.PostMessage.new!(%{
+        "request_id" => "file",
+        "room_id" => "C123",
+        "content" => %{"kind" => "media", "resource_ref" => ref, "caption" => "slack canonical upload"}
+      })
+
+    assert {:ok, result} = Chat.execute(binding, request)
+    assert result.data["result"]["id"] == "1706745609.000900"
+    refute Map.has_key?(result.data["result"], "metadata")
     assert_received {:send_file, "C123", upload, opts}
     assert upload.filename == "canonical.txt"
     assert Keyword.get(opts, :initial_comment) == "slack canonical upload"
@@ -821,40 +860,34 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
              Adapter.list_threads("C123", transport: MockTransport, direction: :forward)
   end
 
-  test "open_modal/3 requires trigger_id and normalizes result" do
-    assert {:ok, result} =
-             Adapter.open_modal(
-               "C123",
-               %{
-                 type: "modal",
-                 callback_id: "feedback",
-                 title: %{type: "plain_text", text: "Feedback"}
-               },
-               transport: MockTransport,
-               trigger_id: "1337.42"
-             )
-
-    assert result.status == :opened
-
-    assert_received {:open_modal, "1337.42",
-                     %{
-                       type: "modal",
-                       callback_id: "feedback",
-                       title: %{type: "plain_text", text: "Feedback"}
-                     }}
-
-    assert {:error, :missing_trigger_id} =
-             Adapter.open_modal("C123", %{type: "modal", callback_id: "feedback"}, [])
+  test "native modal request requires a private trigger and normalizes the result" do
+    modal = Jido.Chat.Modal.new(%{title: "Feedback", callback_id: "feedback"})
+    binding = captured_binding(trigger_id: "1337.42")
+    {:ok, ref} = Chat.put_resource(binding, "modal", modal)
+    request = Jido.Chat.Signal.OpenModal.new!(%{"request_id" => "modal", "room_id" => "C123", "modal" => ref})
+    assert {:ok, result} = Chat.execute(binding, request)
+    assert result.data["result"]["opened"]
+    assert_received {:open_modal, "1337.42", view}
+    assert view["type"] == "modal"
+    assert view["callback_id"] == "feedback"
+    assert view["title"]["text"] == "Feedback"
+    assert {:error, :missing_trigger_id} = Adapter.open_modal("C123", modal, [])
   end
 
   test "handle_webhook/3 routes app_mention, slash, action, modal, and reaction events" do
-    chat =
-      Chat.new(user_name: "jido", adapters: %{slack: Jido.Chat.Slack.Adapter})
-      |> Chat.on_new_mention(fn _thread, _incoming -> send(self(), :mention_hit) end)
-      |> Chat.on_slash_command(fn _event -> send(self(), :slash_hit) end)
-      |> Chat.on_action(fn _event -> send(self(), :action_hit) end)
-      |> Chat.on_modal_submit(fn _event -> send(self(), :modal_submit_hit) end)
-      |> Chat.on_reaction(fn _event -> send(self(), :reaction_hit) end)
+    binding = captured_binding()
+    {:ok, handlers} = Handlers.new()
+
+    {:ok, handlers} =
+      Handlers.on(handlers, Jido.Chat.Signal.MessageReceived, fn _ -> send(self(), :mention_hit) end, mode: :mention)
+
+    {:ok, handlers} = Handlers.on(handlers, Jido.Chat.Signal.SlashCommandReceived, fn _ -> send(self(), :slash_hit) end)
+    {:ok, handlers} = Handlers.on(handlers, Jido.Chat.Signal.ActionReceived, fn _ -> send(self(), :action_hit) end)
+
+    {:ok, handlers} =
+      Handlers.on(handlers, Jido.Chat.Signal.ModalSubmitted, fn _ -> send(self(), :modal_submit_hit) end)
+
+    {:ok, handlers} = Handlers.on(handlers, Jido.Chat.Signal.ReactionAdded, fn _ -> send(self(), :reaction_hit) end)
 
     mention_payload = %{
       "type" => "event_callback",
@@ -867,10 +900,8 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       }
     }
 
-    assert {:ok, _chat, %Jido.Chat.Incoming{} = incoming} =
-             Adapter.handle_webhook(chat, mention_payload, [])
-
-    assert incoming.external_message_id == "1706745600.000100"
+    assert {:ok, _, [incoming]} = route(binding, handlers, mention_payload)
+    assert incoming.data["message_id"] == "1706745600.000100"
     assert_received :mention_hit
 
     slash_payload = %{
@@ -882,7 +913,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       "trigger_id" => "1337.42"
     }
 
-    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, slash_payload, [])
+    assert {:ok, _chat, _incoming} = route(binding, handlers, slash_payload)
     assert_received :slash_hit
 
     action_payload =
@@ -897,7 +928,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       })
 
     assert {:ok, _chat, _incoming} =
-             Adapter.handle_webhook(chat, %{"payload" => action_payload}, [])
+             route(binding, handlers, %{"payload" => action_payload})
 
     assert_received :action_hit
 
@@ -908,6 +939,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
         "view" => %{
           "id" => "V123",
           "callback_id" => "feedback",
+          "private_metadata" => Jason.encode!(%{"channel_id" => "C123"}),
           "state" => %{
             "values" => %{
               "block_1" => %{"notes" => %{"type" => "plain_text_input", "value" => "great"}}
@@ -917,7 +949,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       })
 
     assert {:ok, _chat, _incoming} =
-             Adapter.handle_webhook(chat, %{"payload" => modal_payload}, [])
+             route(binding, handlers, %{"payload" => modal_payload})
 
     assert_received :modal_submit_hit
 
@@ -931,70 +963,57 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
       }
     }
 
-    assert {:ok, _chat, _incoming} = Adapter.handle_webhook(chat, reaction_payload, [])
+    assert {:ok, _chat, _incoming} = route(binding, handlers, reaction_payload)
     assert_received :reaction_hit
   end
 
-  test "parse_event/2 noop and webhook response handle Slack url verification" do
+  test "native empty delivery and private response handle Slack URL verification" do
     request =
       Jido.Chat.WebhookRequest.new(%{
         adapter_name: :slack,
         payload: %{"type" => "url_verification", "challenge" => "hello-challenge"}
       })
 
-    assert {:ok, :noop} = Jido.Chat.Slack.Adapter.parse_event(request, [])
-
-    response =
-      Jido.Chat.Slack.Adapter.format_webhook_response(
-        {:ok, Chat.new(adapters: %{slack: Jido.Chat.Slack.Adapter}), :noop},
-        request: request
-      )
-
+    assert {:ok, %{signals: []}} = Chat.normalize_event(captured_binding(), request)
+    response = Adapter.format_webhook_response({:ok, []}, request: request)
     assert response.body == "hello-challenge"
   end
 
-  test "webhook pipeline uses chat metadata slack_response for interaction replies" do
-    chat =
-      Chat.new(adapters: %{slack: Jido.Chat.Slack.Adapter})
-      |> Chat.on_slash_command(fn chat, _event ->
-        %{chat | metadata: Map.put(chat.metadata, :slack_response, %{"text" => "ack"})}
-      end)
+  test "private webhook response builder returns the existing interaction response shape" do
+    binding = captured_binding()
 
-    assert {:ok, _chat, _event, response} =
-             Jido.Chat.WebhookPipeline.handle_request(
-               chat,
-               :slack,
-               %{
-                 "command" => "/help",
-                 "text" => "topic",
-                 "channel_id" => "C123",
-                 "user_id" => "U123",
-                 "user_name" => "alice",
-                 "trigger_id" => "1337.42"
-               },
-               [],
-               &Jido.Chat.get_adapter/2,
-               &Jido.Chat.process_event/4
-             )
+    payload = %{
+      "command" => "/help",
+      "text" => "topic",
+      "channel_id" => "C123",
+      "user_id" => "U123",
+      "trigger_id" => "1337.42"
+    }
+
+    assert {:ok, delivery} = Chat.normalize_event(binding, payload)
+
+    response =
+      Adapter.format_webhook_response({:ok, delivery.signals}, response_builder: fn _ -> %{"text" => "ack"} end)
 
     assert response.status == 200
     assert response.body == %{"text" => "ack"}
   end
 
-  test "handle_webhook/3 fails closed when signature verification fails" do
-    chat = Chat.new(adapters: %{slack: Jido.Chat.Slack.Adapter})
-    raw_body = Jason.encode!(%{"command" => "/help", "channel_id" => "C123", "user_id" => "U123"})
+  test "private webhook verification fails closed on an invalid signature" do
+    payload = %{"command" => "/help", "channel_id" => "C123", "user_id" => "U123"}
 
-    assert {:error, :invalid_signature} =
-             Adapter.handle_webhook(
-               chat,
-               %{"command" => "/help", "channel_id" => "C123", "user_id" => "U123"},
-               signing_secret: "secret",
-               headers: %{
-                 "x-slack-signature" => "v0=bad",
-                 "x-slack-request-timestamp" => Integer.to_string(System.os_time(:second))
-               },
-               raw_body: raw_body
-             )
+    request =
+      Jido.Chat.WebhookRequest.new(%{
+        adapter_name: :slack,
+        payload: payload,
+        raw: Jason.encode!(payload),
+        headers: %{
+          "x-slack-signature" => "v0=bad",
+          "x-slack-request-timestamp" => Integer.to_string(System.os_time(:second))
+        }
+      })
+
+    binding = captured_binding(signing_secret: "secret")
+    assert {:error, :invalid_signature} = Adapter.verify_webhook(request, binding.options)
   end
 end

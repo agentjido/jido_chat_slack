@@ -6,7 +6,7 @@ defmodule Jido.Chat.Slack.Renderer do
   such as charts, use the canonical accessible text fallback.
   """
 
-  alias Jido.Chat.{Card, Modal, OptionsLoadResult}
+  alias Jido.Chat.{Card, Modal}
   alias Jido.Chat.Card.Component
   alias Jido.Chat.Modal.Element
 
@@ -81,9 +81,12 @@ defmodule Jido.Chat.Slack.Renderer do
   end
 
   @doc "Renders normalized dynamic options as a Slack options-load response."
-  @spec options_response(OptionsLoadResult.t() | map()) :: {:ok, map()} | {:error, term()}
+  @spec options_response(map()) :: {:ok, map()} | {:error, term()}
   def options_response(result) do
-    result = OptionsLoadResult.new(result)
+    result = %{
+      options: result[:options] || result["options"] || [],
+      option_groups: result[:option_groups] || result["option_groups"] || []
+    }
 
     cond do
       result.options != [] and result.option_groups != [] ->
@@ -474,17 +477,23 @@ defmodule Jido.Chat.Slack.Renderer do
     end
   end
 
+  defp option_field(value, key) when is_map(value), do: Map.get(value, key, Map.get(value, Atom.to_string(key)))
+
   defp render_load_options(options),
-    do: map_ok(options, &render_option(&1.label, &1.value, &1.description))
+    do:
+      map_ok(
+        options,
+        &render_option(option_field(&1, :label), option_field(&1, :value), option_field(&1, :description))
+      )
 
   defp render_load_groups(groups) do
     map_ok(groups, fn group ->
-      if length(group.options) > @option_limit do
+      if length(option_field(group, :options) || []) > @option_limit do
         provider_limit(:group_options, @option_limit)
       else
-        with :ok <- text_limit(group.label, @option_label_limit, :option_group_label),
-             {:ok, options} <- render_load_options(group.options) do
-          {:ok, %{"label" => plain_text(group.label), "options" => options}}
+        with :ok <- text_limit(group[:label] || group["label"], @option_label_limit, :option_group_label),
+             {:ok, options} <- render_load_options(option_field(group, :options) || []) do
+          {:ok, %{"label" => plain_text(group[:label] || group["label"]), "options" => options}}
         end
       end
     end)
