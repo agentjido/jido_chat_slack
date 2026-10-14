@@ -8,154 +8,64 @@
 [![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
 [![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
 
-`jido_chat_slack` is the Slack adapter package for `jido_chat`.
+`jido_chat_slack` provides the `Jido.Chat.Slack.Adapter` adapter for the public Chat Signal contract.
 
-## Release Status
+## Release status
 
-This package is being prepared for the Jido 1.x chat package release line.
-It is part of the Elixir implementation aligned to the Vercel Chat SDK
-([chat-sdk.dev/docs](https://www.chat-sdk.dev/docs)).
+This branch proposes version 2.0. It changes the public communication API.
+Use the immutable PR source commits for review and tests. The new Hex releases
+are not yet published. Production requires Chat 2.0 and compatible upstream
+Signal releases. The dependency helpers keep source pins in development and test.
 
-`Jido.Chat.Slack.Adapter` is the canonical adapter module and uses Slack's
-HTTP APIs via `Req`.
+## Typed operations
 
-## Installation
-
-```elixir
-def deps do
-  [
-    {:jido_chat_slack, "~> 1.0"}
-  ]
-end
-```
-
-## Local Documentation
-
-Run `mix docs` to generate HTML and Markdown documentation in `doc/`, including Markdown pages and `llms.txt`.
-
-## Usage
+The application supplies private binding options and a provider room ID:
 
 ```elixir
-alias Jido.Chat.Slack.Adapter
-
-{:ok, incoming} =
-  Adapter.transform_incoming(%{
-    "type" => "message",
-    "channel" => "C123",
-    "user" => "U456",
-    "text" => "hello",
-    "ts" => "1706745600.000100"
-  })
-
-{:ok, sent} =
-  Adapter.send_message("C123", "hi",
-    token: System.fetch_env!("SLACK_BOT_TOKEN")
-  )
+{:ok, binding} = Jido.Chat.bind(Jido.Chat.Slack.Adapter, private_binding_options)
+request = Jido.Chat.Signal.SendMessage.new!(%{
+  "request_id" => "request-1",
+  "room_id" => provider_room_id,
+  "text" => "Hello"
+})
+{:ok, result} = Jido.Chat.execute(binding, request)
 ```
 
-## Config
+The result is an OperationCompleted or OperationFailed signal. Repeating an
+admitted request uses its saved result. Private tokens, clients and resources
+stay outside signal data. Unsupported operations return a defined typed result.
 
-You can pass `:token` and `:signing_secret` per call, or configure globally:
+## Inbound delivery
+
+Normalize one complete verified provider input unit with the configured binding:
 
 ```elixir
-config :jido_chat_slack, :slack_bot_token, System.get_env("SLACK_BOT_TOKEN")
-config :jido_chat_slack, :slack_signing_secret, System.get_env("SLACK_SIGNING_SECRET")
-config :jido_chat_slack, :slack_app_token, System.get_env("SLACK_APP_TOKEN")
+{:ok, delivery} = Jido.Chat.normalize_event(binding, verified_provider_input)
+{:ok, observations} = MyApp.Messaging.accept_delivery(delivery)
 ```
 
-To route Slack API calls through a proxy or local-compatible endpoint, pass
-`:base_url` at runtime:
+The Messaging instance owns runtime acceptance. Deliveries retain ordered facts
+and explicit item failures. Membership evidence does not create grants or start
+message handlers. A rejected listener sink follows the provider checkpoint rule.
+Configure protocol version 1 before starting provider listeners.
 
-```elixir
-Adapter.send_message("C123", "hi",
-  token: System.fetch_env!("SLACK_BOT_TOKEN"),
-  base_url: "http://localhost:8081/api"
-)
-```
+## Operation support
 
-## Live Integration Test
+Native: `send_message`, `send_file`, `post_message`, `edit_message`, `delete_message`, `fetch_metadata`, `fetch_thread`, `fetch_message`, `get_user`, `fetch_subject`, `get_thread_participants`, `mark_as_read`, `fetch_media`, `add_reaction`, `remove_reaction`, `post_ephemeral`, `open_modal`, `load_options`, `fetch_messages`, `fetch_channel_messages`, `list_threads`, `open_thread`, `open_dm`.
 
-There is a live test module at:
+Fallback: `post_channel_message`, `stream`.
 
-- `test/jido/chat/slack/live_integration_test.exs`
+All other operations are explicitly unsupported. See the frozen [adapter matrix](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/adapter-matrix.json).
 
-It is excluded by default. To run it:
+## Provider setup
 
-1. Copy and fill a local env file:
+Slack supports verified webhooks and optional Socket Mode. The adapter keeps acknowledgement order explicit. Modal tokens and conversation references remain private. Dynamic options use the configured loader.
 
-```bash
-cp .env.example .env
-```
+## Checks and migration
 
-2. Run:
+Run `mix test` and `mix quality`. Live tests stay excluded by default. The fixed
+provider fixtures do not need credentials or live traffic.
 
-```bash
-mix test test/jido/chat/slack/live_integration_test.exs --include live
-```
-
-Current live coverage includes:
-
-- send, fetch, edit, and delete
-- metadata lookup
-- stream fallback through core `Jido.Chat.Adapter.stream/4`
-- reply continuity through Slack thread routing
-- reaction add and remove
-- local path upload and raw byte upload through `send_file/3`
-- canonical single-file post through core `post_message/4`
-- optional DM open and ephemeral post when `SLACK_TEST_USER_ID` is set
-
-## Ingress Modes (`listener_child_specs/2`)
-
-The Slack adapter ingress callback supports:
-
-- `ingress.mode = "webhook"`: no listener workers (`{:ok, []}`), host HTTP handles
-  Events API, Interactivity, and Slash Command ingress.
-- `ingress.mode = "socket_mode"`: starts `SocketModeWorker`, opens Slack
-  Socket Mode using an app-level token (`xapp-...`), acks envelopes, and emits
-  payloads through `sink_mfa`.
-
-Slack history fetches currently support backward pagination only. Passing
-`direction: :forward` returns `{:error, :unsupported_direction}` instead of
-silently ignoring the option.
-
-## Resource Context and Read Receipts
-
-The adapter supplies native Slack data for the core resource contracts:
-
-- `get_user/2` returns normalized Slack profile data.
-- `fetch_subject/2` uses the channel topic for a channel subject. When you pass
-  `:external_thread_id`, `:thread_ts`, or `:message_id`, it returns the thread
-  root text and permalink.
-- `get_thread_participants/2` follows Slack reply cursors and returns unique
-  canonical participants. `:limit`, `:page_size`, and `:max_pages` bound the
-  work. The call returns `{:error, :participant_page_limit_exceeded}` instead
-  of a partial result when `:max_pages` is reached.
-- `mark_as_read/3` uses `conversations.mark`. Repeated calls are safe.
-
-These calls require the related Slack token scopes. Slack provider errors are
-returned without conversion.
-
-For interaction responses, you can either:
-
-- set `chat.metadata[:slack_response]` inside a slash/action/modal handler when
-  using webhook ingress, or
-- provide `response_builder` / `slack_response_builder` in webhook opts or
-  Socket Mode ingress settings to build inline Slack response payloads.
-
-Example:
-
-```elixir
-Jido.Chat.Slack.Adapter.listener_child_specs("bridge_slack",
-  ingress: %{
-    mode: "socket_mode",
-    app_token: System.fetch_env!("SLACK_APP_TOKEN"),
-    response_builder: fn %{sink_result: sink_result} ->
-      case sink_result do
-        {:reply, payload} -> payload
-        _ -> nil
-      end
-    end
-  },
-  sink_mfa: {Jido.Messaging.IngressSink, :emit, [MyApp.Messaging, "bridge_slack"]}
-)
-```
+See the [migration guide](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/MIGRATION_GUIDE.md)
+for API mappings, the complete runnable local example, limits, release order and
+rollback pins. Run `mix docs` to build this package's API documentation.
