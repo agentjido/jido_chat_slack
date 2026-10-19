@@ -45,11 +45,13 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
       action = F.module(row["action"])
       assert {:ok, encoded} = Jido.Signal.Serialization.serialize(request)
 
+      assert {:ok, decoded} = Jido.Signal.Catalog.decode(Chat.catalog(client), encoded)
+
       assert {:ok, %{signal: completed}} =
-               Jido.Exec.run(action, %{"signal" => Jason.decode!(encoded)}, %{client: client}, max_attempts: 1)
+               Jido.Chat.Slack.ActionHelpers.execute(action, decoded, %{client: client}, max_attempts: 1)
 
       F.checked(client, request, completed)
-      assert {:ok, _} = action.validate_output(%{signal: completed})
+      assert {:ok, _} = action.validate_output(completed.data)
       F.subset(completed.data["result"], row["result"])
       F.empty()
     end
@@ -71,7 +73,7 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
           :exec ->
             assert(
               {:ok, %{signal: result}} =
-                Jido.Exec.run(Chat.Slack.SendCard, %{signal: request}, %{client: client}, max_attempts: 1)
+                Jido.Chat.Slack.ActionHelpers.execute(Chat.Slack.SendCard, request, %{client: client}, max_attempts: 1)
             )
 
             result
@@ -127,15 +129,20 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
     F.plan(F.row("send_message")["plan"] ++ card_plan())
 
     assert {:ok, %{message: first, card: second}} =
-             Jido.Exec.run(F.Flow, %{message: message, card: card}, %{client: client}, max_attempts: 1)
+             Jido.Exec.run(F.Flow, %{message: message.data, card: card.data}, %{client: client}, max_attempts: 1)
 
+    assert {:ok, first} = Jido.Chat.Slack.ActionHelpers.reply(Chat.SendMessage, message, first, %{client: client})
+    assert {:ok, second} = Jido.Chat.Slack.ActionHelpers.reply(Chat.Slack.SendCard, card, second, %{client: client})
     F.checked(client, message, first)
     F.checked(client, card, second)
     assert_receive {:wire, "chat.postMessage", _}
     assert_receive {:wire, "chat.postMessage", _}
     F.empty()
     F.plan([%{"method" => "chat.postMessage", "body" => %{"ok" => false, "error" => "missing_scope"}}])
-    assert {:error, _} = Jido.Exec.run(F.Flow, %{message: message, card: card}, %{client: client}, max_attempts: 1)
+
+    assert {:error, _} =
+             Jido.Exec.run(F.Flow, %{message: message.data, card: card.data}, %{client: client}, max_attempts: 1)
+
     assert_receive {:wire, "chat.postMessage", _}
     refute_receive {:wire, _, _}
     F.empty()

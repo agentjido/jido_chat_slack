@@ -124,8 +124,8 @@ defmodule Jido.Chat.Slack.ContractFixtures.Flow do
   use Jido.Flow, name: "slack_contract_flow"
 
   flow do
-    step("message", action: Jido.Chat.SendMessage, params: %{signal: input(:message)})
-    step("card", action: Jido.Chat.Slack.SendCard, params: %{signal: input(:card)}, needs: ["message"])
-    output(%{message: result("message", [:signal]), card: result("card", [:signal])})
+    step("message", action: Jido.Chat.SendMessage, params: input(:message))
+    step("card", action: Jido.Chat.Slack.SendCard, params: input(:card), needs: ["message"])
+    output(%{message: result("message"), card: result("card")})
   end
 end
