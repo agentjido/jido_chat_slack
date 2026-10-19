@@ -14,8 +14,8 @@ transports. Keep live success tests separate from this offline gate.
 - **kind:** persisted-format
 - **status:** active
 
-### jido_chat_slack.signals.I2 — Constructors keep private values out of public Signals
-- **scope:** Card content, runtime handles, secrets, and constructor context.
+### jido_chat_slack.signals.I2 — Chat policy keeps private values out of public Signals
+- **scope:** Chat policy construction and admission: card content, runtime handles, secrets, and constructor context.
 - **must:** Reject nested private data, process handles, unknown envelope fields, and identity overrides. Valid card requests must round trip through the Client catalog.
 - **kind:** security
 - **status:** active

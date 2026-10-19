@@ -4,7 +4,7 @@ defmodule Jido.Chat.Slack.AdapterContractTest do
   use Covenant.Case, component: "jido_chat_slack.adapter", async: false
   @moduletag capture_log: true
   alias Jido.Chat
-  alias Chat.Slack.ContractFixtures, as: F
+  alias Jido.Chat.Slack.ContractFixtures, as: F
 
   setup do
     observer = self()

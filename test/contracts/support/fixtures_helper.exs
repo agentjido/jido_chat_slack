@@ -72,7 +72,7 @@ defmodule Jido.Chat.Slack.ContractFixtures do
     assert completed.data["client_id"] == client.id
     assert completed.data["operation"] == request.type
     assert completed.source == client.source
-    assert completed.extensions["causationid"] == request.id
+    assert completed.extensions["jidocausationid"] == request.id
     assert completed.extensions["traceparent"] == @trace
     assert completed.extensions["tracestate"] == "contract=slack"
     round_trip(client, completed)

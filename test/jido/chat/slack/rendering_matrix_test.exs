@@ -1,7 +1,7 @@
 defmodule Jido.Chat.Slack.RenderingMatrixTest do
   use ExUnit.Case, async: true
   alias Jido.Chat.{Card, Modal}
-  alias Jido.Chat.Slack.{Renderer, InteractionResponse}
+  alias Jido.Chat.Slack.{InteractionResponse, Renderer}
 
   test "cards render text, sections, fields, images, links, and action controls" do
     options = [Card.select_option("A", "a"), Card.select_option("B", "b")]

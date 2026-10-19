@@ -494,7 +494,8 @@ defmodule Jido.Chat.Slack.Operations do
       {:error, :missing_trigger_id}
     else
       with {:ok, view_payload} <- Renderer.modal(modal),
-           {:ok, result} <- transport(opts).open_modal(opts.trigger_id, view_payload, ModalOptions.transport_opts(opts)) do
+           transport_opts = ModalOptions.transport_opts(opts),
+           {:ok, result} <- transport(opts).open_modal(opts.trigger_id, view_payload, transport_opts) do
         view = map_get(result, [:view, "view"]) || %{}
         id = stringify(map_get(view, [:id, "id"]) || map_get(result, [:view_id, "view_id"]))
 

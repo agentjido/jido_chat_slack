@@ -226,7 +226,7 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
     assert event.data["thread_id"] == nil
 
     query =
-      Jido.Chat.Signal.LoadOptions.new!(%{
+      Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.LoadOptions, %{
         "client_id" => binding.id,
         "request_id" => "options",
         "interaction_id" => event.data["interaction_id"],
@@ -265,7 +265,7 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
     assert {:ok, %{signals: [event]}} = Jido.Chat.normalize(binding, payload)
 
     query =
-      Jido.Chat.Signal.LoadOptions.new!(%{
+      Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.LoadOptions, %{
         "client_id" => binding.id,
         "request_id" => "options",
         "interaction_id" => event.data["interaction_id"],

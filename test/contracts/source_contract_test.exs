@@ -4,9 +4,10 @@ defmodule Jido.Chat.Slack.SourceContractTest do
   use Covenant.Case, component: "jido_chat_slack.source", async: false
   @moduletag capture_log: true
   alias Jido.Chat
-  alias Chat.Slack.{Source, InteractionResponse, Operations}
-  alias Chat.Slack.ContractFixtures, as: F
-  alias Chat.Slack.SocketFixtures.{Connection, TestSocket}
+  alias Jido.Chat.Slack.ContractFixtures, as: F
+  alias Jido.Chat.Slack.{InteractionResponse, Operations}
+  alias Jido.Chat.Slack.SocketFixtures.{Connection, TestSocket}
+  alias Jido.Chat.Slack.Source
 
   defmodule StaticConnection do
     def open_socket(_, _), do: {:ok, "wss://contract"}

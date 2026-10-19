@@ -21,7 +21,7 @@ defmodule Jido.Chat.Slack.ProviderErrorsTest do
       client = Jido.Chat.Client.new!(Adapter, id: "errors", credentials: %{token: error}, transport: Transport)
 
       request =
-        Jido.Chat.Signal.SendMessage.new!(%{
+        Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.SendMessage, %{
           "client_id" => client.id,
           "request_id" => "req",
           "room_id" => "C",
@@ -35,7 +35,7 @@ defmodule Jido.Chat.Slack.ProviderErrorsTest do
     client = Jido.Chat.Client.new!(Adapter, id: "errors", credentials: %{token: "test"}, transport: Transport)
 
     request =
-      Jido.Chat.Signal.DeleteMessage.new!(%{
+      Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.DeleteMessage, %{
         "client_id" => client.id,
         "request_id" => "req",
         "room_id" => "C",
@@ -51,7 +51,7 @@ defmodule Jido.Chat.Slack.ProviderErrorsTest do
 
   test "host option loaders accept map results and reject invalid results" do
     event =
-      Jido.Chat.Signal.LoadOptions.new!(%{
+      Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.LoadOptions, %{
         "client_id" => "test",
         "request_id" => "req",
         "interaction_id" => "I",

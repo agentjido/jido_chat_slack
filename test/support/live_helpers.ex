@@ -18,7 +18,7 @@ defmodule Jido.Chat.Slack.LiveHelpers do
     case Chat.execute(client, request, options: options) do
       {:ok, complete} ->
         check(client, complete, request.data["request_id"])
-        assert complete.extensions["causationid"] == request.id
+        assert complete.extensions["jidocausationid"] == request.id
         assert complete.data["operation"] == request.type
         complete.data["result"]
 
@@ -54,7 +54,7 @@ defmodule Jido.Chat.Slack.LiveHelpers do
     assert complete.data["request_id"] == request_id
     assert complete.extensions["traceparent"] == @trace
     assert complete.extensions["tracestate"] == "test=slack-live"
-    assert is_binary(complete.extensions["causationid"])
+    assert is_binary(complete.extensions["jidocausationid"])
     assert {:ok, json} = Jido.Signal.Serialization.serialize(complete)
     refute json =~ "xoxb-"
     refute json =~ "xapp-"

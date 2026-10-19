@@ -5,7 +5,7 @@ defmodule Jido.Chat.Slack.LiveAgent.Reply do
   def run(params, context) do
     if String.starts_with?(params["text"] || "", "Jido Agent proof ") do
       request =
-        Jido.Chat.Signal.SendMessage.new!(%{
+        Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.SendMessage, %{
           "client_id" => context.chat.client_id,
           "request_id" => params["item_id"] <> ":reply",
           "room_id" => params["room_id"],
@@ -30,6 +30,7 @@ defmodule Jido.Chat.Slack.LiveAgent.Record do
 end
 
 defmodule Jido.Chat.Slack.LiveAgent do
+  @moduledoc false
   use Jido.Agent, name: "slack_live_agent"
 
   agent do

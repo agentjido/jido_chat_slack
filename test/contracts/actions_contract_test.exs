@@ -4,7 +4,7 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
   use Covenant.Case, component: "jido_chat_slack.actions", async: false
   @moduletag capture_log: true
   alias Jido.Chat
-  alias Chat.Slack.ContractFixtures, as: F
+  alias Jido.Chat.Slack.ContractFixtures, as: F
 
   setup do
     start_supervised!(F.wire_child(self()))
@@ -12,7 +12,8 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
   end
 
   defp card(client) do
-    Chat.Slack.Signal.SendCard.new!(
+    Jido.Chat.Signal.Policy.new!(
+      Chat.Slack.Signal.SendCard,
       %{
         "client_id" => client.id,
         "request_id" => "card-request",
@@ -111,7 +112,7 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
       F.plan([%{"method" => "chat.postMessage", "body" => body}])
       assert {:error, %{code: ^code, signal: failed}} = Chat.execute(client, request)
       assert failed.data["request_id"] == "card-request"
-      assert failed.extensions["causationid"] == request.id
+      assert failed.extensions["jidocausationid"] == request.id
       assert failed.extensions["traceparent"] == F.trace()
       F.round_trip(client, failed)
       F.empty()
@@ -156,7 +157,7 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
     request = F.request(row, client)
     assert {:error, %{code: :provider_failure, signal: failed}} = Chat.execute(client, request)
     assert failed.data["outcome"] == "unknown"
-    assert failed.extensions["causationid"] == request.id
+    assert failed.extensions["jidocausationid"] == request.id
     F.round_trip(client, failed)
     F.empty()
   end

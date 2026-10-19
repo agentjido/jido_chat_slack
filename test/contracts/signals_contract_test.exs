@@ -3,15 +3,15 @@ Code.require_file("support/fixtures_helper.exs", __DIR__)
 defmodule Jido.Chat.Slack.SignalsContractTest do
   use Covenant.Case, component: "jido_chat_slack.signals", async: true
   alias Jido.Chat
-  alias Chat.Slack.ContractFixtures, as: F
+  alias Jido.Chat.Slack.ContractFixtures, as: F
 
   @tag obligation: "jido_chat_slack.signals.I1"
   test "SendCard has fixed request, completion and failure identities and strict schemas" do
     expected = [
-      {Chat.Slack.Signal.SendCard, "jido.chat.slack.command.send_card", "urn:jido:chat:slack:send_card:1"},
+      {Chat.Slack.Signal.SendCard, "jido.chat.slack.command.send_card", "urn:jido:chat:slack:send_card:2"},
       {Chat.Slack.SendCard.Completed, "jido.chat.slack.command.send_card.completed",
-       "urn:jido:chat:slack:send_card:1:completed"},
-      {Chat.Slack.SendCard.Failed, "jido.chat.slack.command.send_card.failed", "urn:jido:chat:slack:send_card:1:failed"}
+       "urn:jido:chat:slack:send_card:2:completed"},
+      {Chat.Slack.SendCard.Failed, "jido.chat.slack.command.send_card.failed", "urn:jido:chat:slack:send_card:2:failed"}
     ]
 
     assert MapSet.new(Chat.Slack.signal_definitions()) == MapSet.new(Enum.map(expected, &elem(&1, 0)))
@@ -34,9 +34,11 @@ defmodule Jido.Chat.Slack.SignalsContractTest do
     for card <- [
           %{"token" => "never-project-this"},
           %{"metadata" => %{"secret" => "never-project-this"}},
-          %{"title" => self()}
+          %{"title" => self()},
+          %{"components" => [%{"kind" => "unknown"}]},
+          %{"components" => [%{"kind" => "table", "columns" => ["A"], "rows" => [[1, 2]]}]}
         ] do
-      assert {:error, _} = Chat.Slack.Signal.SendCard.new(%{data | "card" => card})
+      assert {:error, _} = Jido.Chat.Signal.Policy.new(Chat.Slack.Signal.SendCard, %{data | "card" => card})
     end
 
     for opts <- [
@@ -45,10 +47,17 @@ defmodule Jido.Chat.Slack.SignalsContractTest do
           [extensions: %{"handle" => "private-trigger"}],
           [source: "https://user:secret@example.test"]
         ] do
-      assert {:error, _} = Chat.Slack.Signal.SendCard.new(data, opts)
+      assert {:error, _} = Jido.Chat.Signal.Policy.new(Chat.Slack.Signal.SendCard, data, opts)
     end
 
-    assert {:ok, signal} = Chat.Slack.Signal.SendCard.new(data)
+    assert {:ok, signal} = Jido.Chat.Signal.Policy.new(Chat.Slack.Signal.SendCard, data)
+    F.round_trip(F.client(), signal)
+
+    card = Chat.Card.new(%{title: "Form", components: [Chat.Card.text("Hello")]})
+
+    assert {:ok, signal} =
+             Jido.Chat.Signal.Policy.new(Chat.Slack.Signal.SendCard, %{data | "card" => Chat.Card.to_map(card)})
+
     F.round_trip(F.client(), signal)
   end
 
@@ -61,6 +70,7 @@ defmodule Jido.Chat.Slack.SignalsContractTest do
         assert {:ok, delivery} = Chat.normalize(client, fixture["payload"])
         assert [fact] = delivery.signals
         assert fact.type == fixture["type"], fixture["name"]
+        assert %Jido.Signal.Trace{} = Jido.Signal.Trace.get(fact)
         F.subset(fact.data, fixture["expected"])
         assert fact.source == client.source
         assert fact.data["delivery_id"] == delivery.id

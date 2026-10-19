@@ -277,7 +277,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     subject_binding = captured_binding()
 
     request =
-      Jido.Chat.Signal.FetchSubject.new!(%{
+      Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.FetchSubject, %{
         "client_id" => subject_binding.id,
         "request_id" => "subject",
         "room_id" => "C123",
@@ -290,7 +290,7 @@ defmodule Jido.Chat.Slack.AdapterSurfaceTest do
     participants_binding = captured_binding(transport: PaginatedParticipantsTransport)
 
     request =
-      Jido.Chat.Signal.GetThreadParticipants.new!(%{
+      Jido.Chat.Signal.Policy.new!(Jido.Chat.Signal.GetThreadParticipants, %{
         "client_id" => participants_binding.id,
         "request_id" => "participants",
         "room_id" => "C123",

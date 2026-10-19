@@ -465,7 +465,7 @@ defmodule Jido.Chat.Slack.Normalizer do
 
     data = if definition == MembershipChanged, do: Map.put_new(data, "previous", nil), else: data
     subject = if data["room_id"], do: Identity.conversation_subject(context.client.id, data["room_id"])
-    definition.new(data, source: context.client.source, subject: subject)
+    Policy.new(definition, data, source: context.client.source, subject: subject)
   end
 
   defp failed(context, code, kind, room, ordinal \\ "failure") do
