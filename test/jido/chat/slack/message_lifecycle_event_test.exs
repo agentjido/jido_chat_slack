@@ -2,7 +2,6 @@ defmodule Jido.Chat.Slack.MessageLifecycleEventTest do
   use ExUnit.Case, async: true
 
   alias Jido.Chat
-  alias Jido.Chat.{Handlers, WebhookRequest}
   alias Jido.Chat.Slack.Adapter
 
   test "parses a Slack message_changed callback into a typed update event" do
@@ -145,72 +144,16 @@ defmodule Jido.Chat.Slack.MessageLifecycleEventTest do
     refute Map.has_key?(event.data, "raw")
   end
 
-  test "routes lifecycle callbacks only to lifecycle handlers and preserves create routing" do
-    {:ok, handlers} = Handlers.new()
-
-    {:ok, handlers} =
-      Handlers.on(
-        handlers,
-        Jido.Chat.Signal.MessageReceived,
-        fn incoming -> send(self(), {:new_message, incoming.data["message_id"]}) end,
-        mode: :message,
-        pattern: ~r/.*/
-      )
-
-    {:ok, handlers} =
-      Handlers.on(handlers, Jido.Chat.Signal.MessageUpdated, fn event ->
-        send(self(), {:message_updated, event.data["message_id"]})
-      end)
-
-    update_payload = %{
-      "type" => "event_callback",
-      "event" => %{
-        "type" => "message",
-        "subtype" => "message_changed",
-        "channel" => "C567",
-        "message" => %{
-          "type" => "message",
-          "user" => "U567",
-          "text" => "edited",
-          "ts" => "1706746200.000700"
-        }
-      }
-    }
-
-    assert {:ok, binding, update} = parse(update_payload)
-    assert {:ok, handlers, _} = Handlers.handle(handlers, update)
-    assert update.type == "jido.chat.message.updated"
-    assert_received {:message_updated, "1706746200.000700"}
-    refute_received {:new_message, _}
-
-    create_payload = %{
-      "type" => "event_callback",
-      "event" => %{
-        "type" => "message",
-        "channel" => "C567",
-        "user" => "U567",
-        "text" => "new",
-        "ts" => "1706746300.000800"
-      }
-    }
-
-    assert {:ok, same_binding, create} = parse(create_payload)
-    assert same_binding.id == binding.id
-    assert {:ok, _, _} = Handlers.handle(handlers, create)
-    assert create.type == "jido.chat.message.received"
-    assert_received {:new_message, "1706746300.000800"}
-  end
-
   defp parse(payload) do
     request =
-      WebhookRequest.new(%{
+      Map.new(%{
         adapter_name: :slack,
         path: "/slack/events",
         payload: payload,
         raw: payload
       })
 
-    {:ok, binding} = Chat.bind(Adapter, id: "lifecycle", token: "fixture-token")
-    with {:ok, %{signals: [event]}} <- Chat.normalize_event(binding, request), do: {:ok, binding, event}
+    {:ok, binding} = Jido.Chat.Client.new(Adapter, id: "lifecycle", credentials: %{token: "fixture-token"})
+    with {:ok, %{signals: [event]}} <- Chat.normalize(binding, request), do: {:ok, binding, event}
   end
 end

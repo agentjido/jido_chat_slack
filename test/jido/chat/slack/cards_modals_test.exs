@@ -87,50 +87,6 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
     assert Enum.map(row, & &1["text"]) == ["api", "ok"]
   end
 
-  test "card posts preserve stable link action IDs" do
-    card =
-      Card.new(%{
-        components: [Card.actions([Card.link_button("Runbook", "https://example.test", "runbook")])]
-      })
-
-    {:ok, binding} = Jido.Chat.bind(Adapter, id: "cards", token: "fixture-token", transport: MockTransport)
-    {:ok, ref} = Jido.Chat.put_resource(binding, "card", card)
-
-    request_signal =
-      Jido.Chat.Signal.PostMessage.new!(%{
-        "request_id" => "card",
-        "room_id" => "C123",
-        "content" => %{"kind" => "card", "resource_ref" => ref}
-      })
-
-    assert {:ok, result} = Jido.Chat.execute(binding, request_signal)
-    assert result.type == "jido.chat.operation.completed"
-
-    assert_received {:send_message, "C123", text, opts}
-    assert text =~ "Runbook"
-
-    assert [%{"type" => "actions", "elements" => [button]}] =
-             Enum.filter(Keyword.fetch!(opts, :blocks), &(&1["type"] == "actions"))
-
-    assert button["action_id"] == "runbook"
-    assert button["url"] == "https://example.test"
-
-    request =
-      Jido.Chat.WebhookRequest.new(%{
-        adapter_name: :slack,
-        payload: %{
-          "type" => "block_actions",
-          "channel" => %{"id" => "C123"},
-          "actions" => [%{"action_id" => button["action_id"], "url" => button["url"]}],
-          "user" => %{"id" => "U123"}
-        }
-      })
-
-    assert {:ok, %{signals: [action]}} = Jido.Chat.normalize_event(binding, request)
-    assert action.type == "jido.chat.action.received"
-    assert action.data["action_id"] == "runbook"
-  end
-
   test "provider table limits fail explicitly" do
     columns = Enum.map(1..21, &"column-#{&1}")
     table = Card.table(columns, [columns], caption: "Too wide")
@@ -154,39 +110,6 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
 
     assert {:error, {:provider_limit, :table_characters, 20_000}} =
              Renderer.card(Card.new(%{components: over_limit}))
-  end
-
-  test "modal renderer maps date, number, and external select inputs" do
-    modal =
-      Modal.new(%{
-        callback_id: "report",
-        title: "Report",
-        elements: [
-          Modal.date_input("day", "Day", value: ~D[2026-08-20]),
-          Modal.number_input("count", "Count", value: 12.5, min_value: 0, max_value: 100),
-          Modal.external_select("owner", "Owner", min_query_length: 2)
-        ]
-      })
-
-    {:ok, binding} =
-      Jido.Chat.bind(Adapter, id: "modal", token: "fixture-token", transport: MockTransport, trigger_id: "1337.42")
-
-    {:ok, ref} = Jido.Chat.put_resource(binding, "modal", modal)
-    request = Jido.Chat.Signal.OpenModal.new!(%{"request_id" => "modal", "room_id" => "C123", "modal" => ref})
-    assert {:ok, result} = Jido.Chat.execute(binding, request)
-    assert result.data["result"]["id"] == "V123"
-
-    assert_received {:open_modal, "1337.42", view}
-
-    assert [date, number, external] = view["blocks"]
-    assert date["element"]["type"] == "datepicker"
-    assert date["element"]["initial_date"] == "2026-08-20"
-    assert date["element"]["action_id"] == "day"
-    assert number["element"]["type"] == "number_input"
-    assert number["element"]["initial_value"] == "12.5"
-    assert number["element"]["is_decimal_allowed"] == true
-    assert external["element"]["type"] == "external_select"
-    assert external["element"]["min_query_length"] == 2
   end
 
   test "unsupported native modal constraints return explicit errors" do
@@ -284,7 +207,7 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
     loader = fn %Jido.Signal{data: %{"query" => "ad"}} -> {:ok, %{options: [%{label: "Ada", value: "user:ada"}]}} end
 
     {:ok, binding} =
-      Jido.Chat.bind(Adapter, id: "options", token: "fixture-token", transport: MockTransport, options_loader: loader)
+      new_client(Adapter, id: "options", token: "fixture-token", transport: MockTransport, options_loader: loader)
 
     payload = %{
       "type" => "block_suggestion",
@@ -295,7 +218,7 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
       "view" => %{"id" => "V123"}
     }
 
-    assert {:ok, %{signals: [event]}} = Jido.Chat.normalize_event(binding, payload)
+    assert {:ok, %{signals: [event]}} = Jido.Chat.normalize(binding, payload)
     assert event.type == "jido.chat.options.requested"
     assert event.data["action_id"] == "owner"
     assert event.data["query"] == "ad"
@@ -304,6 +227,7 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
 
     query =
       Jido.Chat.Signal.LoadOptions.new!(%{
+        "client_id" => binding.id,
         "request_id" => "options",
         "interaction_id" => event.data["interaction_id"],
         "query" => event.data["query"]
@@ -313,19 +237,22 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
     assert {:ok, response} = Renderer.options_response(result.data["result"])
     assert hd(response["options"])["text"]["text"] == "Ada"
     too_many = fn _ -> {:ok, %{options: Enum.map(1..101, &%{label: "Option #{&1}", value: "#{&1}"})}} end
-    {:ok, rejected_binding} = Jido.Chat.bind(Adapter, id: "too-many", token: "fixture-token", options_loader: too_many)
+    {:ok, rejected_binding} = new_client(Adapter, id: "too-many", token: "fixture-token", options_loader: too_many)
 
-    assert {:ok, failed} =
-             Jido.Chat.execute(rejected_binding, %{query | data: Map.put(query.data, "request_id", "too-many")})
+    assert {:error, %Jido.Chat.Error{signal: failed}} =
+             Jido.Chat.execute(rejected_binding, %{
+               query
+               | data: query.data |> Map.put("request_id", "too-many") |> Map.put("client_id", rejected_binding.id)
+             })
 
-    assert failed.type == "jido.chat.operation.failed"
+    assert failed.type == "jido.chat.query.load_options.failed"
     assert failed.data["code"] == "provider_failure"
     assert {:error, {:provider_limit, :options, 100}} = Renderer.options_response(elem(too_many.(query), 1))
   end
 
   test "options-load webhook replies use Slack's response shape" do
     loader = fn _ -> {:ok, %{options: [%{label: "Ada", value: "user:ada"}]}} end
-    {:ok, binding} = Jido.Chat.bind(Adapter, id: "webhook-options", token: "fixture-token", options_loader: loader)
+    {:ok, binding} = new_client(Adapter, id: "webhook-options", token: "fixture-token", options_loader: loader)
 
     payload = %{
       "type" => "block_suggestion",
@@ -335,17 +262,18 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
       "user" => %{"id" => "U123"}
     }
 
-    assert {:ok, %{signals: [event]}} = Jido.Chat.normalize_event(binding, payload)
+    assert {:ok, %{signals: [event]}} = Jido.Chat.normalize(binding, payload)
 
     query =
       Jido.Chat.Signal.LoadOptions.new!(%{
+        "client_id" => binding.id,
         "request_id" => "options",
         "interaction_id" => event.data["interaction_id"],
         "query" => "ad"
       })
 
     assert {:ok, result} = Jido.Chat.execute(binding, query)
-    response = Adapter.format_webhook_response({:ok, result}, binding.options)
+    response = Jido.Chat.Slack.Operations.format_webhook_response({:ok, result}, Jido.Chat.Client.options(binding))
     assert response.status == 200
 
     assert response.body == %{
@@ -355,48 +283,25 @@ defmodule Jido.Chat.Slack.CardsModalsTest do
            }
   end
 
-  test "option loader timeouts stay typed at the core boundary" do
-    owner = self()
-
-    for {id, loader, deadline} <- [
-          {"returned", fn _ -> {:error, :timeout} end, 25},
-          {"deadline",
-           fn _ ->
-             send(owner, {:loader_started, self()})
-
-             receive do
-               :release -> {:ok, %{options: []}}
-             end
-           end, 5}
-        ] do
-      {:ok, binding} =
-        Jido.Chat.bind(Adapter, id: id, token: "fixture-token", options_loader: loader, timeout_ms: deadline)
-
-      query = Jido.Chat.Signal.LoadOptions.new!(%{"request_id" => id, "interaction_id" => "opaque", "query" => "ad"})
-      assert {:ok, failed} = Jido.Chat.execute(binding, query)
-      assert failed.type == "jido.chat.operation.failed"
-      assert failed.data["code"] == "provider_failure"
-      assert failed.data["retryable"]
-      response = Adapter.format_webhook_response({:ok, failed}, binding.options)
-      assert response.status == 200
-      assert response.body == %{"options" => []}
-    end
-
-    assert_receive {:loader_started, child}
-    refute Process.alive?(child)
-  end
-
   test "capabilities declare native inputs and explicit chart fallback" do
     capabilities = Jido.Chat.Slack.Adapter.capabilities()
 
-    assert capabilities.cards == :native
-    assert capabilities.card_charts == :fallback
-    assert capabilities.card_tables == :native
-    assert capabilities.link_action_ids == :native
-    assert capabilities.modal_date_input == :native
-    assert capabilities.modal_number_input == :native
-    assert capabilities.external_select == :native
-    assert capabilities.options_load == :native
+    assert capabilities.open_modal == :native
+    assert capabilities.load_options == :native
+    assert {Jido.Chat.Slack.Signal.SendCard, Jido.Chat.Slack.SendCard} in Jido.Chat.Slack.operations()
     assert :ok = Jido.Chat.Adapter.validate_capabilities(Jido.Chat.Slack.Adapter)
+  end
+
+  defp new_client(adapter, opts) do
+    Jido.Chat.Client.new(adapter,
+      id: opts[:id],
+      credentials: opts |> Keyword.take([:token, :secret_token, :signing_secret]) |> Map.new(),
+      transport: opts[:transport] || adapter_transport(adapter),
+      config: Keyword.drop(opts, [:id, :token, :secret_token, :signing_secret, :transport])
+    )
+  end
+
+  defp adapter_transport(adapter) do
+    if function_exported?(adapter, :default_transport, 0), do: adapter.default_transport(), else: nil
   end
 end

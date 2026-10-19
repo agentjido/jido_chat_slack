@@ -1,6 +1,6 @@
 defmodule Jido.Chat.Slack.Normalizer do
   @moduledoc "Private Slack protocol mapper for complete native Signal deliveries."
-  alias Jido.Chat.{Binding, Delivery, Resources, WebhookRequest}
+  alias Jido.Chat.{Client, Delivery}
 
   alias Jido.Chat.Signal.{
     ActionReceived,
@@ -24,13 +24,10 @@ defmodule Jido.Chat.Slack.Normalizer do
   @limits [:signal_too_large, :delivery_too_large, :too_many_signals, :too_many_failures]
 
   @doc false
-  @spec normalize(Binding.t(), term()) :: {:ok, Delivery.t()} | {:error, Jido.Chat.Errors.Contract.t()}
-  def normalize(binding, %WebhookRequest{payload: payload}), do: normalize(binding, payload)
+  @spec normalize(Client.t(), term()) :: {:ok, Delivery.t()} | {:error, Jido.Chat.Errors.Contract.t()}
+  def normalize(client, %{payload: payload}), do: normalize(client, payload)
 
-  def normalize(%Binding{} = binding, input) do
-    tracker = {__MODULE__, make_ref()}
-    Process.put(tracker, [])
-
+  def normalize(%Client{} = client, input) do
     result =
       try do
         payload = decode(input)
@@ -38,28 +35,15 @@ defmodule Jido.Chat.Slack.Normalizer do
         inner = decode(inner)
         identity = field(inner, "event_id") || "digest:" <> digest(canonical(inner))
         delivery = "slack:" <> (field(payload, "envelope_id") || identity)
-        context = %{binding: binding, delivery: delivery, item: "slack:" <> identity, tracker: tracker}
-        with {:ok, facts} <- map_payload(context, inner), do: Delivery.new(binding, delivery, List.wrap(facts))
+        context = %{client: client, delivery: delivery, item: "slack:" <> identity}
+        with {:ok, facts} <- map_payload(context, inner), do: Delivery.new(client, delivery, List.wrap(facts))
       rescue
         _ -> Policy.error(:invalid_delivery)
       catch
         _, _ -> Policy.error(:invalid_delivery)
       end
 
-    if match?({:error, _}, result), do: Enum.each(Process.get(tracker, []), &Resources.cancel(binding, &1))
-    Process.delete(tracker)
     result
-  end
-
-  @doc false
-  @spec interaction(Binding.t(), String.t()) :: {:ok, map()} | {:error, Jido.Chat.Errors.Contract.t()}
-  def interaction(binding, id) do
-    case :ets.lookup(binding.resources, {:slack_interaction, id}) do
-      [{_, ref}] -> Resources.resolve(binding, ref)
-      _ -> Policy.error(:invalid_resource)
-    end
-  rescue
-    _ -> Policy.error(:resource_expired)
   end
 
   defp decode(%{} = payload) do
@@ -81,7 +65,6 @@ defmodule Jido.Chat.Slack.Normalizer do
   defp map_payload(context, payload) do
     type = protocol_type(field(payload, "type"))
     event = field(payload, "event")
-    existing = Process.get(context.tracker)
 
     result =
       cond do
@@ -109,20 +92,12 @@ defmodule Jido.Chat.Slack.Normalizer do
 
     case result do
       {:ok, facts} ->
-        if Enum.all?(List.wrap(facts), &(&1.type == "jido.chat.normalization.failed")) do
-          refs = Process.get(context.tracker) -- existing
-          Enum.each(refs, &Resources.cancel(context.binding, &1))
-        end
-
         {:ok, List.wrap(facts)}
 
       {:error, %Jido.Chat.Errors.Contract{code: code}} = error when code in @limits ->
         error
 
       _ ->
-        refs = Process.get(context.tracker) -- existing
-        Enum.each(refs, &Resources.cancel(context.binding, &1))
-        Process.put(context.tracker, existing)
         room = field(payload, "channel")
         room = if is_map(room), do: field(room, "id"), else: room
         failed(context, "invalid_item", type || "unknown", room)
@@ -165,7 +140,7 @@ defmodule Jido.Chat.Slack.Normalizer do
           "room_id" => room,
           "message_id" => field(current, "ts") || field(previous, "ts"),
           "text" => message_text(current),
-          "sender" => lifecycle_actor(current, previous, context.binding),
+          "sender" => lifecycle_actor(current, previous, context.client),
           "thread_id" => field(current, "thread_ts") || field(previous, "thread_ts"),
           "timestamp" => field(current, "edited") |> field("ts") || field(event, "event_ts") || field(event, "ts")
         }
@@ -178,11 +153,11 @@ defmodule Jido.Chat.Slack.Normalizer do
           "room_id" => field(event, "channel"),
           "message_id" => field(event, "ts"),
           "text" => message_text(event),
-          "sender" => actor(event, context.binding),
+          "sender" => actor(event, context.client),
           "thread_id" => field(event, "thread_ts"),
           "reply_to_id" => field(event, "thread_ts"),
           "timestamp" => field(event, "ts"),
-          "mentioned" => mentioned || mentions_bot?(event, context.binding),
+          "mentioned" => mentioned || mentions_bot?(event, context.client),
           "mentions" => mentions(message_text(event)),
           "conversation_kind" => conversation_kind(field(event, "channel")),
           "conversation_name" => field(event, "channel_name") || field(event, "channel_title")
@@ -201,7 +176,7 @@ defmodule Jido.Chat.Slack.Normalizer do
       "room_id" => field(event, "channel"),
       "participant_id" => field(event, "user"),
       "actor_id" => actor,
-      "bot_self" => field(event, "user") == context.binding.options[:bot_user_id],
+      "bot_self" => field(event, "user") == Client.options(context.client)[:bot_user_id],
       "transition" => if(joined, do: "joined", else: "left"),
       "evidence" => if(joined, do: "explicit_join", else: "explicit_leave"),
       "previous" => nil,
@@ -256,7 +231,7 @@ defmodule Jido.Chat.Slack.Normalizer do
     message = field(payload, "message") || %{}
     room = field(payload, "channel") |> field("id")
     room = room || field(payload, "container") |> field("channel_id")
-    room = room || private_room(field(view, "private_metadata")) || view_room(context.binding, field(view, "id"))
+    room = room || private_room(field(view, "private_metadata"))
     actor = field(payload, "user") |> field("id")
 
     with {:ok, interaction} <- capture_interaction(context, payload, room) do
@@ -325,23 +300,9 @@ defmodule Jido.Chat.Slack.Normalizer do
     end
   end
 
-  defp capture_interaction(context, payload, room) do
-    id = "slack:interaction:" <> digest({context.binding.id, canonical(payload)})
-    private = select(payload, ~w(trigger_id response_url))
-    private = Map.put(private, "room_id", room)
-
-    with {:ok, ref} <- Resources.put(context.binding, "result", private, []) do
-      Process.put(context.tracker, [ref | Process.get(context.tracker)])
-      :ets.insert(context.binding.resources, {{:slack_interaction, id}, ref})
-      {:ok, id}
-    end
-  end
-
-  defp view_room(binding, view) do
-    case :ets.lookup(binding.resources, {:slack_view_room, view}) do
-      [{_, room}] -> room
-      _ -> nil
-    end
+  defp capture_interaction(context, payload, _room) do
+    id = "slack:interaction:" <> digest({context.client.id, canonical(payload)})
+    {:ok, id}
   end
 
   defp private_room(value) when is_binary(value) do
@@ -403,10 +364,9 @@ defmodule Jido.Chat.Slack.Normalizer do
       mime = normalized_mime(field(file, "mimetype"))
       filename = non_blank(field(file, "name")) || non_blank(field(file, "title"))
       kind = media_kind(mime, field(file, "filetype"), filename, url)
-      private = %{url: url, kind: private_kind(kind), filename: filename, media_type: mime, provider: canonical(file)}
 
-      with true <- is_binary(url) and url != "", {:ok, ref} <- Resources.put(context.binding, "media", private, []) do
-        Process.put(context.tracker, [ref | Process.get(context.tracker)])
+      with true <- is_binary(url) and url != "" do
+        ref = %{"id" => url, "client_id" => context.client.id, "kind" => "media"}
 
         value =
           %{"kind" => kind, "resource_ref" => ref}
@@ -439,11 +399,6 @@ defmodule Jido.Chat.Slack.Normalizer do
     end
   end
 
-  defp private_kind("image"), do: :image
-  defp private_kind("audio"), do: :audio
-  defp private_kind("video"), do: :video
-  defp private_kind("file"), do: :file
-
   defp non_blank(value) when is_binary(value) do
     case String.trim(value) do
       "" -> nil
@@ -460,7 +415,7 @@ defmodule Jido.Chat.Slack.Normalizer do
     end
   end
 
-  defp actor(message, binding) do
+  defp actor(message, client) do
     profile = field(message, "user_profile") || field(message, "bot_profile") || %{}
     bot = field(message, "bot_id")
     id = field(message, "user") || if(is_binary(bot), do: "bot:" <> bot, else: field(profile, "id"))
@@ -470,14 +425,14 @@ defmodule Jido.Chat.Slack.Normalizer do
       "username" => field(message, "username") || field(profile, "name"),
       "display_name" => field(profile, "display_name") || field(profile, "real_name") || field(profile, "name"),
       "is_bot" => not is_nil(field(message, "bot_id")),
-      "is_self" => id in [binding.options[:bot_user_id], binding.options[:bot_id]]
+      "is_self" => id in [Client.options(client)[:bot_user_id], Client.options(client)[:bot_id]]
     }
     |> present()
   end
 
-  defp lifecycle_actor(current, previous, binding) do
-    selected = actor(current, binding)
-    if is_binary(selected["id"]), do: selected, else: actor(previous, binding)
+  defp lifecycle_actor(current, previous, client) do
+    selected = actor(current, client)
+    if is_binary(selected["id"]), do: selected, else: actor(previous, client)
   end
 
   defp protocol_type(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
@@ -495,7 +450,7 @@ defmodule Jido.Chat.Slack.Normalizer do
 
   defp mentions(text) when is_binary(text), do: Regex.scan(~r/<@([^>]+)>/, text) |> Enum.map(&Enum.at(&1, 1))
   defp mentions(_text), do: []
-  defp mentions_bot?(message, binding), do: binding.options[:bot_user_id] in mentions(message_text(message))
+  defp mentions_bot?(message, client), do: Client.options(client)[:bot_user_id] in mentions(message_text(message))
   defp conversation_kind("D" <> _), do: "direct"
   defp conversation_kind("G" <> _), do: "group"
   defp conversation_kind("C" <> _), do: "channel"
@@ -509,8 +464,8 @@ defmodule Jido.Chat.Slack.Normalizer do
       |> Map.put("item_id", context.item <> ":" <> ordinal)
 
     data = if definition == MembershipChanged, do: Map.put_new(data, "previous", nil), else: data
-    subject = if data["room_id"], do: Identity.conversation_subject(context.binding.id, data["room_id"])
-    definition.new(data, source: context.binding.source, subject: subject)
+    subject = if data["room_id"], do: Identity.conversation_subject(context.client.id, data["room_id"])
+    definition.new(data, source: context.client.source, subject: subject)
   end
 
   defp failed(context, code, kind, room, ordinal \\ "failure") do

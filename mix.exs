@@ -1,7 +1,7 @@
 defmodule Jido.Chat.Slack.MixProject do
   use Mix.Project
 
-  @version "1.1.0"
+  @version "3.0.0-dev"
   @source_url "https://github.com/agentjido/jido_chat_slack"
   @description "Slack adapter package for Jido.Chat"
 
@@ -22,13 +22,13 @@ defmodule Jido.Chat.Slack.MixProject do
       docs: docs(),
       test_coverage: [
         tool: ExCoveralls,
-        summary: [threshold: 0],
+        summary: [threshold: 90],
         export: "cov"
       ],
       dialyzer: [
         plt_local_path: "priv/plts/project.plt",
         plt_core_path: "priv/plts/core.plt",
-        plt_add_apps: [:mix]
+        plt_add_apps: [:mix, :jido, :ex_unit]
       ]
     ]
   end
@@ -38,10 +38,12 @@ defmodule Jido.Chat.Slack.MixProject do
       preferred_envs: [
         quality: :test,
         q: :test,
+        "test.contracts": :test,
         cover: :test,
         coveralls: :test,
         "coveralls.github": :test,
-        "coveralls.html": :test
+        "coveralls.html": :test,
+        "coveralls.json": :test
       ]
     ]
   end
@@ -57,15 +59,18 @@ defmodule Jido.Chat.Slack.MixProject do
 
   defp deps do
     [
-      chat_dependency(),
-      signal_test_dependency(),
+      # Runtime dependencies
+      {:jason, "~> 1.4"},
+      {:jido_chat, "~> 3.0.0-dev"},
       {:req, "~> 0.5"},
       {:websockex, "~> 0.5.1"},
-      {:jason, "~> 1.4"},
-      {:dotenvy, "~> 1.1", only: [:test]},
+
+      # Development and test dependencies
+      {:covenant, "~> 0.2.0", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:doctor, "~> 0.21", only: [:dev, :test], runtime: false},
+      {:dotenvy, "~> 1.1", only: :test},
       {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: [:dev, :test]},
       {:git_hooks, "~> 0.8", only: [:dev, :test], runtime: false},
@@ -73,36 +78,12 @@ defmodule Jido.Chat.Slack.MixProject do
     ]
   end
 
-  # The published beta lacks the Signal API used by this migration.
-  defp signal_test_dependency do
-    {:jido_signal,
-     git: "https://github.com/agentjido/jido_signal.git",
-     ref: "d6611eca1c95eb507843baceb55991e4801d8421",
-     only: [:dev, :test],
-     override: true}
-  end
-
-  defp chat_dependency do
-    case {Mix.env(), System.get_env("JIDO_CHAT_PATH")} do
-      {env, path} when env in [:dev, :test] and is_binary(path) and path != "" ->
-        {:jido_chat, path: Path.expand(path), override: true}
-
-      {env, _} when env in [:dev, :test] ->
-        {:jido_chat,
-         git: "https://github.com/agentjido/jido_chat.git",
-         ref: "2a9c21a860cb8c5f1069a865a981a8be035f56c0",
-         override: true}
-
-      _ ->
-        {:jido_chat, "~> 2.0"}
-    end
-  end
-
   defp aliases do
     [
       setup: ["deps.get"],
       install_hooks: ["git_hooks.install"],
       q: ["quality"],
+      "test.contracts": ["covenant.check"],
       cover: ["coveralls"],
       quality: [
         "format --check-formatted",
@@ -116,7 +97,7 @@ defmodule Jido.Chat.Slack.MixProject do
 
   defp package do
     [
-      files: ["lib", "mix.exs", "README.md", "LICENSE", "usage-rules.md"],
+      files: ["lib", "guides", "mix.exs", "README.md", "LICENSE", "usage-rules.md"],
       maintainers: ["Mike Hostetler"],
       licenses: ["Apache-2.0"],
       links: %{
@@ -135,7 +116,10 @@ defmodule Jido.Chat.Slack.MixProject do
       source_url: @source_url,
       extras: [
         "README.md",
-        "CONTRIBUTING.md"
+        "CONTRIBUTING.md",
+        "guides/capabilities.md",
+        "guides/contracts.md",
+        "guides/test-matrix.md"
       ]
     ]
   end

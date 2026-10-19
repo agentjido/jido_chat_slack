@@ -3,10 +3,8 @@ defmodule Jido.Chat.Slack.InteractionResponse do
   Normalizes Slack webhook responses and Socket Mode acknowledgements.
   """
 
-  alias Jido.Chat.WebhookResponse
-
   @doc "Builds an optional webhook response from adapter or runtime results."
-  @spec webhook_response(term(), keyword()) :: WebhookResponse.t() | nil
+  @spec webhook_response(term(), keyword()) :: map() | nil
   def webhook_response(result, opts \\ []) when is_list(opts) do
     context = %{
       adapter_name: :slack,
@@ -19,14 +17,11 @@ defmodule Jido.Chat.Slack.InteractionResponse do
       nil ->
         nil
 
-      %WebhookResponse{} = response ->
-        response
-
       response ->
         if is_map(response) and webhook_response_shape?(response) do
-          WebhookResponse.new(response)
+          Map.new(response)
         else
-          WebhookResponse.new(%{status: 200, body: response})
+          Map.new(%{status: 200, body: response})
         end
     end
   end
@@ -87,8 +82,8 @@ defmodule Jido.Chat.Slack.InteractionResponse do
   defp response_from_result({:reply, response}), do: response
   defp response_from_result({:ok, {:reply, response}}), do: response
 
-  defp response_from_result({:ok, %Jido.Signal{type: "jido.chat.operation.completed", data: data}}) do
-    if data["operation"] == "load_options" do
+  defp response_from_result({:ok, %Jido.Signal{type: "jido.chat.query.load_options.completed", data: data}}) do
+    if data["operation"] == "jido.chat.query.load_options" do
       case Jido.Chat.Slack.Renderer.options_response(data["result"]) do
         {:ok, response} -> response
         _ -> %{"options" => []}
@@ -97,15 +92,17 @@ defmodule Jido.Chat.Slack.InteractionResponse do
   end
 
   defp response_from_result(
-         {:ok, %Jido.Signal{type: "jido.chat.operation.failed", data: %{"operation" => "load_options"}}}
+         {:ok,
+          %Jido.Signal{
+            type: "jido.chat.query.load_options.failed",
+            data: %{"operation" => "jido.chat.query.load_options"}
+          }}
        ),
        do: %{"options" => []}
 
   defp response_from_result(_result), do: nil
 
   defp normalize_socket_payload(nil), do: nil
-
-  defp normalize_socket_payload(%WebhookResponse{body: body}), do: normalize_socket_payload(body)
 
   defp normalize_socket_payload(response) when is_map(response) do
     if webhook_response_shape?(response) do

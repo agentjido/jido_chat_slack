@@ -49,4 +49,26 @@ defmodule Jido.Chat.Slack.SocketMode.ReqClientTest do
     assert_received {:req_request, opts}
     assert opts[:url] == "https://slack-proxy.test/api/apps.connections.open"
   end
+
+  defmodule ResponseReq do
+    def request(_opts), do: Process.get(:socket_response)
+  end
+
+  test "opening a session returns network, HTTP, and invalid response errors" do
+    for {response, expected} <- [
+          {{:error, :offline}, {:error, :offline}},
+          {{:ok, %Req.Response{status: 503, body: "bad"}}, {:error, {:http_error, 503, "bad"}}},
+          {{:ok, %Req.Response{status: 200, body: %{"ok" => true}}}, {:error, {:missing_socket_url, %{"ok" => true}}}},
+          {{:ok, %Req.Response{status: 200, body: "bad"}}, {:error, {:invalid_response, "bad"}}}
+        ] do
+      Process.put(:socket_response, response)
+      assert ReqClient.open_socket("test", req: ResponseReq) == expected
+    end
+
+    for headers <- [%{"x-test" => "yes"}, [{"x-test", "yes"}]] do
+      assert {:ok, _} = ReqClient.open_socket("test", req: MockReq, headers: headers)
+      assert_receive {:req_request, opts}
+      assert {"x-test", "yes"} in opts[:headers]
+    end
+  end
 end

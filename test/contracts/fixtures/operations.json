@@ -1,0 +1,720 @@
+[
+  {
+    "operation": "send_message",
+    "definition": "Jido.Chat.Signal.SendMessage",
+    "action": "Jido.Chat.SendMessage",
+    "data": {
+      "room_id": "C1",
+      "text": "Hello",
+      "thread_id": "1700000000.000001"
+    },
+    "plan": [
+      {
+        "method": "chat.postMessage",
+        "body": {
+          "ok": true,
+          "ts": "1700000000.000001",
+          "channel": "C1",
+          "text": "Hello",
+          "user": "U1",
+          "thread_ts": "1700000000.000001"
+        },
+        "form": {
+          "channel": "C1",
+          "text": "Hello",
+          "thread_ts": "1700000000.000001"
+        }
+      }
+    ],
+    "result": {
+      "id": "1700000000.000001",
+      "room_id": "C1",
+      "text": "Hello",
+      "thread_id": "1700000000.000001"
+    }
+  },
+  {
+    "operation": "send_file",
+    "definition": "Jido.Chat.Signal.SendFile",
+    "action": "Jido.Chat.SendFile",
+    "data": {
+      "room_id": "C1",
+      "source": {
+        "content_base64": "Ynl0ZXM=",
+        "filename": "bytes.txt"
+      }
+    },
+    "plan": [
+      {
+        "method": "files.getUploadURLExternal",
+        "body": {
+          "ok": true,
+          "upload_url": "https://files.slack.com/upload/proof",
+          "file_id": "F1"
+        },
+        "form": {
+          "filename": "bytes.txt",
+          "length": "5"
+        }
+      },
+      {
+        "method": "https://files.slack.com/upload/proof",
+        "body": "OK",
+        "form": {}
+      },
+      {
+        "method": "files.completeUploadExternal",
+        "body": {
+          "ok": true,
+          "files": [
+            {
+              "id": "F1",
+              "title": "bytes.txt"
+            }
+          ]
+        },
+        "form": {
+          "channel_id": "C1"
+        }
+      },
+      {
+        "method": "files.info",
+        "form": {
+          "file": "F1"
+        },
+        "body": {
+          "ok": true,
+          "file": {
+            "id": "F1",
+            "name": "bytes.txt",
+            "shares": {
+              "public": {
+                "C1": [
+                  {
+                    "ts": "1700000000.000001"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    ],
+    "result": {
+      "id": "1700000000.000001",
+      "room_id": "C1",
+      "status": "sent"
+    }
+  },
+  {
+    "operation": "edit_message",
+    "definition": "Jido.Chat.Signal.EditMessage",
+    "action": "Jido.Chat.EditMessage",
+    "data": {
+      "room_id": "C1",
+      "message_id": "1700000000.000001",
+      "text": "Edited"
+    },
+    "plan": [
+      {
+        "method": "chat.update",
+        "body": {
+          "ok": true,
+          "ts": "1700000000.000001",
+          "channel": "C1",
+          "text": "Hello",
+          "user": "U1",
+          "thread_ts": "1700000000.000001"
+        },
+        "form": {
+          "channel": "C1",
+          "ts": "1700000000.000001",
+          "text": "Edited"
+        }
+      }
+    ],
+    "result": {
+      "id": "1700000000.000001",
+      "room_id": "C1",
+      "text": "Edited",
+      "status": "updated"
+    }
+  },
+  {
+    "operation": "delete_message",
+    "definition": "Jido.Chat.Signal.DeleteMessage",
+    "action": "Jido.Chat.DeleteMessage",
+    "data": {
+      "room_id": "C1",
+      "message_id": "1700000000.000001"
+    },
+    "plan": [
+      {
+        "method": "chat.delete",
+        "body": {
+          "ok": true
+        },
+        "form": {
+          "channel": "C1",
+          "ts": "1700000000.000001"
+        }
+      }
+    ],
+    "result": {
+      "acknowledged": true
+    }
+  },
+  {
+    "operation": "mark_as_read",
+    "definition": "Jido.Chat.Signal.MarkAsRead",
+    "action": "Jido.Chat.MarkAsRead",
+    "data": {
+      "room_id": "C1",
+      "message_id": "1700000000.000001"
+    },
+    "plan": [
+      {
+        "method": "conversations.mark",
+        "body": {
+          "ok": true
+        },
+        "form": {
+          "channel": "C1",
+          "ts": "1700000000.000001"
+        }
+      }
+    ],
+    "result": {
+      "acknowledged": true
+    }
+  },
+  {
+    "operation": "fetch_metadata",
+    "definition": "Jido.Chat.Signal.FetchMetadata",
+    "action": "Jido.Chat.FetchMetadata",
+    "data": {
+      "room_id": "C1"
+    },
+    "plan": [
+      {
+        "method": "conversations.info",
+        "body": {
+          "ok": true,
+          "channel": {
+            "id": "C1",
+            "name": "contract",
+            "topic": {
+              "value": "Topic"
+            },
+            "is_channel": true
+          }
+        },
+        "form": {
+          "channel": "C1"
+        }
+      }
+    ],
+    "result": {
+      "id": "C1",
+      "name": "contract",
+      "kind": "channel"
+    }
+  },
+  {
+    "operation": "fetch_thread",
+    "definition": "Jido.Chat.Signal.FetchThread",
+    "action": "Jido.Chat.FetchThread",
+    "data": {
+      "room_id": "C1",
+      "thread_id": "1700000000.000001"
+    },
+    "plan": [
+      {
+        "method": "conversations.info",
+        "body": {
+          "ok": true,
+          "channel": {
+            "id": "C1",
+            "name": "contract",
+            "topic": {
+              "value": "Topic"
+            },
+            "is_channel": true
+          }
+        },
+        "form": {}
+      },
+      {
+        "method": "conversations.replies",
+        "body": {
+          "ok": true,
+          "messages": [
+            {
+              "ts": "1700000000.000001",
+              "channel": "C1",
+              "text": "Hello",
+              "user": "U1",
+              "thread_ts": "1700000000.000001",
+              "reply_count": 1
+            }
+          ],
+          "has_more": false,
+          "response_metadata": {
+            "next_cursor": ""
+          }
+        },
+        "form": {
+          "channel": "C1",
+          "ts": "1700000000.000001"
+        }
+      }
+    ],
+    "result": {
+      "id": "1700000000.000001",
+      "room_id": "C1",
+      "name": "Hello"
+    }
+  },
+  {
+    "operation": "fetch_message",
+    "definition": "Jido.Chat.Signal.FetchMessage",
+    "action": "Jido.Chat.FetchMessage",
+    "data": {
+      "room_id": "C1",
+      "message_id": "1700000000.000001"
+    },
+    "plan": [
+      {
+        "method": "conversations.history",
+        "body": {
+          "ok": true,
+          "messages": [
+            {
+              "ts": "1700000000.000001",
+              "channel": "C1",
+              "text": "Hello",
+              "user": "U1",
+              "thread_ts": "1700000000.000001",
+              "reply_count": 1
+            }
+          ],
+          "has_more": false,
+          "response_metadata": {
+            "next_cursor": ""
+          }
+        },
+        "form": {
+          "channel": "C1",
+          "latest": "1700000000.000001",
+          "inclusive": "true",
+          "limit": "1"
+        }
+      }
+    ],
+    "result": {
+      "id": "1700000000.000001",
+      "room_id": "C1",
+      "text": "Hello",
+      "thread_id": "1700000000.000001"
+    }
+  },
+  {
+    "operation": "get_user",
+    "definition": "Jido.Chat.Signal.GetUser",
+    "action": "Jido.Chat.GetUser",
+    "data": {
+      "user_id": "U1"
+    },
+    "plan": [
+      {
+        "method": "users.info",
+        "body": {
+          "ok": true,
+          "user": {
+            "id": "U1",
+            "name": "alice",
+            "is_bot": false,
+            "profile": {
+              "display_name": "Alice"
+            }
+          }
+        },
+        "form": {
+          "user": "U1"
+        }
+      }
+    ],
+    "result": {
+      "id": "U1",
+      "username": "alice",
+      "display_name": "Alice",
+      "is_bot": false
+    }
+  },
+  {
+    "operation": "fetch_subject",
+    "definition": "Jido.Chat.Signal.FetchSubject",
+    "action": "Jido.Chat.FetchSubject",
+    "data": {
+      "room_id": "C1"
+    },
+    "plan": [
+      {
+        "method": "conversations.info",
+        "body": {
+          "ok": true,
+          "channel": {
+            "id": "C1",
+            "name": "contract",
+            "topic": {
+              "value": "Topic"
+            },
+            "is_channel": true
+          }
+        },
+        "form": {}
+      }
+    ],
+    "result": {
+      "id": "C1",
+      "room_id": "C1",
+      "kind": "conversation",
+      "title": "Topic"
+    }
+  },
+  {
+    "operation": "get_thread_participants",
+    "definition": "Jido.Chat.Signal.GetThreadParticipants",
+    "action": "Jido.Chat.GetThreadParticipants",
+    "data": {
+      "room_id": "C1",
+      "thread_id": "1700000000.000001"
+    },
+    "plan": [
+      {
+        "method": "conversations.replies",
+        "body": {
+          "ok": true,
+          "messages": [
+            {
+              "ts": "1700000000.000001",
+              "channel": "C1",
+              "text": "Hello",
+              "user": "U1",
+              "thread_ts": "1700000000.000001",
+              "reply_count": 1
+            }
+          ],
+          "has_more": false,
+          "response_metadata": {
+            "next_cursor": ""
+          }
+        },
+        "form": {
+          "channel": "C1",
+          "ts": "1700000000.000001"
+        }
+      },
+      {
+        "method": "users.info",
+        "body": {
+          "ok": true,
+          "user": {
+            "id": "U1",
+            "name": "alice",
+            "is_bot": false,
+            "profile": {
+              "display_name": "Alice"
+            }
+          }
+        },
+        "form": {}
+      }
+    ],
+    "result": {
+      "scope": "observed",
+      "complete": false,
+      "participants": [
+        {
+          "id": "U1",
+          "username": "alice",
+          "display_name": "Alice",
+          "is_bot": false
+        }
+      ]
+    }
+  },
+  {
+    "operation": "download_file",
+    "definition": "Jido.Chat.Signal.DownloadFile",
+    "action": "Jido.Chat.DownloadFile",
+    "data": {
+      "resource_ref": {
+        "client_id": "alpha",
+        "kind": "file",
+        "id": "https://files.slack.com/files-pri/T1-F1/bytes.txt"
+      }
+    },
+    "plan": [
+      {
+        "method": "https://files.slack.com/files-pri/T1-F1/bytes.txt",
+        "body": "bytes",
+        "form": {}
+      }
+    ],
+    "result": {
+      "content_base64": "Ynl0ZXM="
+    }
+  },
+  {
+    "operation": "add_reaction",
+    "definition": "Jido.Chat.Signal.AddReaction",
+    "action": "Jido.Chat.AddReaction",
+    "data": {
+      "room_id": "C1",
+      "message_id": "1700000000.000001",
+      "reaction": "wave"
+    },
+    "plan": [
+      {
+        "method": "reactions.add",
+        "body": {
+          "ok": true
+        },
+        "form": {
+          "channel": "C1",
+          "timestamp": "1700000000.000001",
+          "name": "wave"
+        }
+      }
+    ],
+    "result": {
+      "acknowledged": true
+    }
+  },
+  {
+    "operation": "remove_reaction",
+    "definition": "Jido.Chat.Signal.RemoveReaction",
+    "action": "Jido.Chat.RemoveReaction",
+    "data": {
+      "room_id": "C1",
+      "message_id": "1700000000.000001",
+      "reaction": "wave"
+    },
+    "plan": [
+      {
+        "method": "reactions.remove",
+        "body": {
+          "ok": true
+        },
+        "form": {
+          "channel": "C1",
+          "timestamp": "1700000000.000001",
+          "name": "wave"
+        }
+      }
+    ],
+    "result": {
+      "acknowledged": true
+    }
+  },
+  {
+    "operation": "post_ephemeral",
+    "definition": "Jido.Chat.Signal.PostEphemeral",
+    "action": "Jido.Chat.PostEphemeral",
+    "data": {
+      "room_id": "C1",
+      "user_id": "U1",
+      "text": "Private",
+      "format": "plain"
+    },
+    "plan": [
+      {
+        "method": "chat.postEphemeral",
+        "body": {
+          "ok": true,
+          "message_ts": "1700000000.000001"
+        },
+        "form": {
+          "channel": "C1",
+          "user": "U1",
+          "text": "Private",
+          "mrkdwn": "false"
+        }
+      }
+    ],
+    "result": {
+      "id": "1700000000.000001",
+      "room_id": "C1",
+      "text": "Private"
+    }
+  },
+  {
+    "operation": "open_dm",
+    "definition": "Jido.Chat.Signal.OpenDm",
+    "action": "Jido.Chat.OpenDm",
+    "data": {
+      "user_id": "U1"
+    },
+    "plan": [
+      {
+        "method": "conversations.open",
+        "body": {
+          "ok": true,
+          "channel": {
+            "id": "D1"
+          }
+        },
+        "form": {
+          "users": "U1"
+        }
+      }
+    ],
+    "result": {
+      "id": "D1",
+      "kind": "direct"
+    }
+  },
+  {
+    "operation": "fetch_messages",
+    "definition": "Jido.Chat.Signal.FetchMessages",
+    "action": "Jido.Chat.FetchMessages",
+    "data": {
+      "room_id": "C1",
+      "direction": "backward",
+      "limit": 2
+    },
+    "plan": [
+      {
+        "method": "conversations.history",
+        "body": {
+          "ok": true,
+          "messages": [
+            {
+              "ts": "1700000000.000001",
+              "channel": "C1",
+              "text": "Hello",
+              "user": "U1",
+              "thread_ts": "1700000000.000001",
+              "reply_count": 1
+            }
+          ],
+          "has_more": false,
+          "response_metadata": {
+            "next_cursor": ""
+          }
+        },
+        "form": {
+          "channel": "C1",
+          "limit": "2"
+        }
+      }
+    ],
+    "result": {
+      "complete": true,
+      "messages": [
+        {
+          "id": "1700000000.000001",
+          "room_id": "C1",
+          "text": "Hello",
+          "thread_id": "1700000000.000001",
+          "timestamp": "1700000000.000001"
+        }
+      ]
+    }
+  },
+  {
+    "operation": "list_threads",
+    "definition": "Jido.Chat.Signal.ListThreads",
+    "action": "Jido.Chat.ListThreads",
+    "data": {
+      "room_id": "C1"
+    },
+    "plan": [
+      {
+        "method": "conversations.history",
+        "body": {
+          "ok": true,
+          "messages": [
+            {
+              "ts": "1700000000.000001",
+              "channel": "C1",
+              "text": "Hello",
+              "user": "U1",
+              "thread_ts": "1700000000.000001",
+              "reply_count": 1
+            }
+          ],
+          "has_more": false,
+          "response_metadata": {
+            "next_cursor": ""
+          }
+        },
+        "form": {
+          "channel": "C1"
+        }
+      }
+    ],
+    "result": {
+      "complete": true,
+      "threads": [
+        {
+          "id": "1700000000.000001",
+          "room_id": "C1",
+          "name": "Hello"
+        }
+      ]
+    }
+  },
+  {
+    "operation": "open_modal",
+    "definition": "Jido.Chat.Signal.OpenModal",
+    "action": "Jido.Chat.OpenModal",
+    "data": {
+      "room_id": "C1",
+      "modal": {
+        "title": "Form",
+        "callback_id": "proof",
+        "elements": []
+      }
+    },
+    "plan": [
+      {
+        "method": "views.open",
+        "body": {
+          "ok": true,
+          "view": {
+            "id": "V1"
+          }
+        },
+        "form": {
+          "trigger_id": "private-trigger"
+        }
+      }
+    ],
+    "result": {
+      "opened": true,
+      "id": "V1"
+    }
+  },
+  {
+    "operation": "load_options",
+    "definition": "Jido.Chat.Signal.LoadOptions",
+    "action": "Jido.Chat.LoadOptions",
+    "data": {
+      "interaction_id": "I1",
+      "query": "a"
+    },
+    "plan": [],
+    "result": {
+      "complete": true,
+      "options": [
+        {
+          "label": "Alpha",
+          "value": "a"
+        }
+      ],
+      "option_groups": []
+    }
+  }
+]

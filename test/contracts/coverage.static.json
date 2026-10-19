@@ -1,0 +1,237 @@
+{
+  "apps": {
+    "jido_chat_slack": {
+      "active": 18,
+      "coverage": 1.0,
+      "covered": 18
+    }
+  },
+  "components": {
+    "jido_chat_slack.actions": {
+      "active": 4,
+      "app": "jido_chat_slack",
+      "coverage": 1.0,
+      "covered": 4,
+      "form": "light",
+      "obligations": {
+        "jido_chat_slack.actions.I1": {
+          "failing": 0,
+          "kind": "persisted_format",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test all native Actions execute serialized requests and preserve causal context"
+          ]
+        },
+        "jido_chat_slack.actions.I2": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test SendCard executes through Chat and Exec for separate clients with exact Block Kit"
+          ]
+        },
+        "jido_chat_slack.actions.I3": {
+          "failing": 0,
+          "kind": "security",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test a lookup failure after upload completion has an unknown write outcome",
+            "test foreign requests and provider failures preserve privacy and causal failure context"
+          ]
+        },
+        "jido_chat_slack.actions.I4": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test core and Slack Actions compose in a Flow and a failed dependency prevents the card write"
+          ]
+        }
+      }
+    },
+    "jido_chat_slack.adapter": {
+      "active": 4,
+      "app": "jido_chat_slack",
+      "coverage": 1.0,
+      "covered": 4,
+      "form": "light",
+      "obligations": {
+        "jido_chat_slack.adapter.I1": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test public exports, capability statuses and catalogs are explicit and have no I/O"
+          ]
+        },
+        "jido_chat_slack.adapter.I2": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test every native operation uses the fixed wire sequence and exact canonical result for two clients"
+          ]
+        },
+        "jido_chat_slack.adapter.I3": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test all facade helpers execute their shared Actions and unsupported helpers make no I/O"
+          ]
+        },
+        "jido_chat_slack.adapter.I4": {
+          "failing": 0,
+          "kind": "security",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test unsupported formats, foreign resources and invalid facade options fail before I/O"
+          ]
+        }
+      }
+    },
+    "jido_chat_slack.signals": {
+      "active": 4,
+      "app": "jido_chat_slack",
+      "coverage": 1.0,
+      "covered": 4,
+      "form": "light",
+      "obligations": {
+        "jido_chat_slack.signals.I1": {
+          "failing": 0,
+          "kind": "persisted_format",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test SendCard has fixed request, completion and failure identities and strict schemas"
+          ]
+        },
+        "jido_chat_slack.signals.I2": {
+          "failing": 0,
+          "kind": "security",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test card constructors reject private nested data, runtime values and envelope overrides"
+          ]
+        },
+        "jido_chat_slack.signals.I3": {
+          "failing": 0,
+          "kind": "functional",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test all fourteen incoming fact families match fixed fixtures and serialize without private handles"
+          ]
+        },
+        "jido_chat_slack.signals.I4": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test normalization is stable across input forms, isolated by client, and rejects a malformed complete delivery"
+          ]
+        }
+      }
+    },
+    "jido_chat_slack.source": {
+      "active": 6,
+      "app": "jido_chat_slack",
+      "coverage": 1.0,
+      "covered": 6,
+      "form": "light",
+      "obligations": {
+        "jido_chat_slack.source.I1": {
+          "failing": 0,
+          "kind": "security",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test source ownership is hashed and discovery cannot send a Chat command"
+          ]
+        },
+        "jido_chat_slack.source.I2": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test ACK cannot occur while Sensor admission is pending",
+            "test shared Sensor admits one scoped fact, suppresses duplicates and filters rooms before ACK"
+          ]
+        },
+        "jido_chat_slack.source.I3": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test disconnect refreshes the connection and Sensor shutdown closes all owned work",
+            "test timed-out admission has no ACK and a fresh socket ignores frames from the old session"
+          ]
+        },
+        "jido_chat_slack.source.I4": {
+          "failing": 0,
+          "kind": "security",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test webhook signatures use exact bytes and explicit option responses remain a host boundary"
+          ]
+        },
+        "jido_chat_slack.source.I5": {
+          "failing": 0,
+          "kind": "ordering",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test Socket input reaches a real Agent Plugin and shared Action before one provider reply"
+          ]
+        },
+        "jido_chat_slack.source.I6": {
+          "failing": 0,
+          "kind": "security",
+          "passing": 0,
+          "status": "active",
+          "testable": true,
+          "tests": [
+            "test OTP failure reports redact the raw frame, private options and exception data"
+          ]
+        }
+      }
+    }
+  },
+  "covenant": "0.2.0",
+  "mode": "static",
+  "totals": {
+    "active": 18,
+    "coverage": 1.0,
+    "covered": 18
+  }
+}

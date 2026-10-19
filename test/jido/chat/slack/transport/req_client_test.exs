@@ -1,7 +1,6 @@
 defmodule Jido.Chat.Slack.Transport.ReqClientTest do
   use ExUnit.Case, async: true
 
-  alias Jido.Chat.FileUpload
   alias Jido.Chat.Slack.Transport.ReqClient
 
   defmodule MockReq do
@@ -196,7 +195,7 @@ defmodule Jido.Chat.Slack.Transport.ReqClientTest do
     assert {:ok, %{"files" => [%{"id" => "F123"}]}} =
              ReqClient.send_file(
                "C123",
-               FileUpload.new(%{
+               Map.new(%{
                  kind: :file,
                  data: "hello slack\n",
                  filename: "bytes.txt",

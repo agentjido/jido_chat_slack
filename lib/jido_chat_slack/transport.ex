@@ -13,7 +13,7 @@ defmodule Jido.Chat.Slack.Transport do
 
   @callback send_file(
               channel_id :: String.t() | integer(),
-              upload :: Jido.Chat.FileUpload.t(),
+              upload :: map(),
               opts :: keyword()
             ) :: api_result()
 

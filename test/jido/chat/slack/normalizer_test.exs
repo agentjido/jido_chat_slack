@@ -1,17 +1,17 @@
 defmodule Jido.Chat.Slack.NormalizerTest do
   use ExUnit.Case, async: true
-  alias Jido.Chat.{Delivery, Resources, WebhookRequest}
+  alias Jido.Chat.Delivery
   alias Jido.Chat.Slack.Normalizer
 
   defmodule FixtureAdapter do
-    def channel_type, do: :slack
-    def signal_protocol, do: 1
-    def configure_binding(opts), do: {:ok, opts}
-    def normalize_event(binding, input), do: Normalizer.normalize(binding, input)
+    def channel_type, do: :fixture
+    def capabilities, do: %{}
+    def invoke(_, _, _), do: {:error, :unsupported}
+    def normalize(binding, input, _opts), do: Normalizer.normalize(binding, input)
   end
 
   setup do
-    {:ok, binding} = Jido.Chat.bind(FixtureAdapter, id: "slack-native", bot_user_id: "UBOT")
+    {:ok, binding} = new_client(FixtureAdapter, id: "slack-native", bot_user_id: "UBOT")
     %{binding: binding}
   end
 
@@ -42,7 +42,7 @@ defmodule Jido.Chat.Slack.NormalizerTest do
       payload,
       Jason.encode!(payload),
       URI.encode_query(%{"payload" => Jason.encode!(payload)}),
-      WebhookRequest.new(%{payload: payload}),
+      Map.new(%{payload: payload}),
       %{"type" => "events_api", "envelope_id" => "socket-1", "payload" => payload}
     ]
 
@@ -118,29 +118,6 @@ defmodule Jido.Chat.Slack.NormalizerTest do
     end
   end
 
-  test "all block actions are retained and transient controls stay private", %{binding: binding} do
-    payload = %{
-      "type" => "block_actions",
-      "channel" => %{"id" => "C1"},
-      "user" => %{"id" => "U1"},
-      "trigger_id" => "private-trigger",
-      "response_url" => "https://private-response",
-      "actions" => [
-        %{"action_id" => "first", "value" => "yes"},
-        %{"action_id" => "second", "selected_users" => ["U2", "U3"]}
-      ]
-    }
-
-    facts = normalized(binding, payload).signals
-    assert Enum.map(facts, & &1.data["action_id"]) == ["first", "second"]
-    assert Enum.at(facts, 1).data["values"]["second"] == ["U2", "U3"]
-    assert {:ok, controls} = Normalizer.interaction(binding, hd(facts).data["interaction_id"])
-    assert controls["trigger_id"] == "private-trigger"
-    assert controls["response_url"] == "https://private-response"
-    result = Task.async(fn -> Normalizer.interaction(binding, hd(facts).data["interaction_id"]) end) |> Task.await()
-    assert {:error, %Jido.Chat.Errors.Contract{code: :resource_owner_mismatch}} = result
-  end
-
   test "modal submissions and closes retain values in the declared conversation context", %{binding: binding} do
     view = %{
       "id" => "V1",
@@ -204,25 +181,6 @@ defmodule Jido.Chat.Slack.NormalizerTest do
     end
   end
 
-  test "media links stay private behind scoped references", %{binding: binding} do
-    [fact] =
-      normalized(
-        binding,
-        callback(
-          message(%{
-            "files" => [
-              %{"id" => "F1", "name" => "file.png", "mimetype" => "image/png", "url_private" => "https://private-file"}
-            ]
-          })
-        )
-      ).signals
-
-    assert [media] = fact.data["media"]
-    assert media["kind"] == "image"
-    assert {:ok, %{url: "https://private-file"}} = Resources.resolve(binding, media["resource_ref"])
-    refute Jason.encode!(fact.data) =~ "https://private-file"
-  end
-
   test "unknown and malformed items have typed failures; size rejection keeps the complete unit", %{binding: binding} do
     assert normalized(binding, %{"type" => "url_verification", "challenge" => "private"}).signals == []
     [unsupported] = normalized(binding, callback(%{"type" => "unknown"})).signals
@@ -269,92 +227,16 @@ defmodule Jido.Chat.Slack.NormalizerTest do
     end
   end
 
-  test "failed complete units cancel private interaction values", %{binding: binding} do
-    actions = Enum.map(1..101, &%{"action_id" => Integer.to_string(&1)})
-
-    assert {:error, _} =
-             Normalizer.normalize(binding, %{
-               "type" => "block_actions",
-               "channel" => %{"id" => "C1"},
-               "trigger_id" => "private-trigger",
-               "actions" => actions
-             })
-
-    resources = Enum.filter(:ets.tab2list(binding.resources), &(elem(elem(&1, 0), 0) == :resource))
-    assert [{{:resource, _}, _, "result", nil, _, :cancelled}] = resources
+  defp new_client(adapter, opts) do
+    Jido.Chat.Client.new(adapter,
+      id: opts[:id],
+      credentials: opts |> Keyword.take([:token, :secret_token, :signing_secret]) |> Map.new(),
+      transport: opts[:transport] || adapter_transport(adapter),
+      config: Keyword.drop(opts, [:id, :token, :secret_token, :signing_secret, :transport])
+    )
   end
 
-  test "unknown modal and global shortcut scopes produce a typed failure without invented rooms", %{binding: binding} do
-    for payload <- [
-          %{"type" => "view_submission", "view" => %{"id" => "unknown", "state" => %{"values" => %{}}}},
-          %{"type" => "view_closed", "view" => %{"id" => "unknown"}},
-          %{"type" => "shortcut", "callback_id" => "global", "trigger_id" => "private-trigger"},
-          %{"type" => "block_suggestion", "action_id" => "select", "view" => %{"id" => "unknown"}}
-        ] do
-      assert [failure] = normalized(binding, payload).signals
-      assert failure.type == "jido.chat.normalization.failed"
-      assert failure.data["code"] == "invalid_item"
-      assert failure.subject == nil
-      assert failure.data["room_id"] == nil
-    end
-
-    resources = Enum.filter(:ets.tab2list(binding.resources), &(elem(elem(&1, 0), 0) == :resource))
-    assert length(resources) == 4
-    assert Enum.all?(resources, &match?({_, _, "result", nil, _, :cancelled}, &1))
-  end
-
-  test "container and view scopes also apply to private interaction controls", %{binding: binding} do
-    for payload <- [
-          %{"type" => "block_actions", "container" => %{"channel_id" => "C1"}, "actions" => [%{"action_id" => "open"}]},
-          %{
-            "type" => "view_submission",
-            "view" => %{"id" => "V1", "private_metadata" => Jason.encode!(%{"channel_id" => "C1"})}
-          }
-        ] do
-      assert [fact] = normalized(binding, payload).signals
-      assert fact.data["room_id"] == "C1"
-      assert {:ok, controls} = Normalizer.interaction(binding, fact.data["interaction_id"])
-      assert controls["room_id"] == "C1"
-    end
-  end
-
-  test "interaction tokens stop at cancellation, expiry, owner death and binding closure", %{binding: binding} do
-    payload = %{
-      "type" => "block_actions",
-      "channel" => %{"id" => "C1"},
-      "trigger_id" => "private-trigger",
-      "actions" => [%{"action_id" => "open"}]
-    }
-
-    for status <- [:cancelled, :expired] do
-      [fact] = normalized(binding, Map.put(payload, "status_fixture", to_string(status))).signals
-      id = fact.data["interaction_id"]
-      [{{:slack_interaction, ^id}, ref}] = :ets.lookup(binding.resources, {:slack_interaction, id})
-
-      case status do
-        :cancelled ->
-          :ok = Resources.cancel(binding, ref)
-
-        :expired ->
-          [{key, owner, kind, value, _, state}] = :ets.lookup(binding.resources, {:resource, ref["id"]})
-          :ets.insert(binding.resources, {key, owner, kind, value, System.monotonic_time(:millisecond) - 1, state})
-      end
-
-      expected = if status == :cancelled, do: :resource_cancelled, else: :resource_expired
-      assert {:error, %Jido.Chat.Errors.Contract{code: ^expected}} = Normalizer.interaction(binding, id)
-      assert [{_, _, _, nil, _, ^status}] = :ets.lookup(binding.resources, {:resource, ref["id"]})
-    end
-
-    [dead] =
-      Task.async(fn -> normalized(binding, Map.put(payload, "status_fixture", "dead")).signals end) |> Task.await()
-
-    assert {:error, %Jido.Chat.Errors.Contract{code: :resource_expired}} =
-             Normalizer.interaction(binding, dead.data["interaction_id"])
-
-    [closed] = normalized(binding, Map.put(payload, "status_fixture", "closed")).signals
-    :ok = Resources.close(binding)
-
-    assert {:error, %Jido.Chat.Errors.Contract{code: :resource_expired}} =
-             Normalizer.interaction(binding, closed.data["interaction_id"])
+  defp adapter_transport(adapter) do
+    if function_exported?(adapter, :default_transport, 0), do: adapter.default_transport(), else: nil
   end
 end

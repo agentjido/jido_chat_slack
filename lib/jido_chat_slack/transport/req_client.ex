@@ -5,22 +5,20 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
 
   @behaviour Jido.Chat.Slack.Transport
 
-  alias Jido.Chat.FileUpload
-
   @base_url "https://slack.com/api"
 
   @impl true
   def send_message(channel_id, text, opts) do
     payload =
       %{"channel" => stringify(channel_id), "text" => text}
-      |> Map.merge(keyword_payload(opts, [:blocks, :attachments, :thread_ts, :reply_broadcast]))
+      |> Map.merge(keyword_payload(opts, [:mrkdwn, :blocks, :attachments, :thread_ts, :reply_broadcast]))
       |> Map.merge(keyword_payload(opts, [:unfurl_links, :unfurl_media, :username, :icon_emoji, :icon_url]))
 
     api_post("chat.postMessage", payload, opts)
   end
 
   @impl true
-  def send_file(channel_id, %FileUpload{} = upload, opts) do
+  def send_file(channel_id, %{} = upload, opts) do
     with {:ok, filename, bytes} <- upload_bytes(upload),
          {:ok, upload_url_result} <-
            api_post(
@@ -37,7 +35,7 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
              complete_upload_payload(channel_id, file_id, filename, upload, opts),
              opts
            ) do
-      {:ok, complete_result}
+      resolve_upload_share(complete_result, channel_id, file_id, opts, 3)
     else
       nil -> {:error, :invalid_upload_response}
       {:error, _reason} = error -> error
@@ -48,7 +46,7 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
   def edit_message(channel_id, message_id, text, opts) do
     payload =
       %{"channel" => stringify(channel_id), "ts" => stringify(message_id), "text" => text}
-      |> Map.merge(keyword_payload(opts, [:blocks, :attachments]))
+      |> Map.merge(keyword_payload(opts, [:mrkdwn, :blocks, :attachments]))
 
     api_post("chat.update", payload, opts)
   end
@@ -114,10 +112,11 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
         }
 
         with {:ok, result} <- api_post("conversations.history", payload, opts),
-             [message | _] <- result["messages"] || [] do
+             message when is_map(message) <-
+               Enum.find(result["messages"] || [], &(map_get(&1, ["ts"]) == stringify(message_id))) do
           {:ok, message}
         else
-          [] -> {:error, :not_found}
+          nil -> {:error, :not_found}
           {:error, _reason} = error -> error
         end
     end
@@ -164,6 +163,13 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
 
   @impl true
   def download_file(url, opts) do
+    case URI.parse(url) do
+      %URI{scheme: "https", host: "files.slack.com", userinfo: nil} -> download_slack_file(url, opts)
+      _ -> {:error, {:not_attempted, :invalid_media_reference}}
+    end
+  end
+
+  defp download_slack_file(url, opts) do
     token = resolve_token(opts)
     req_module = Keyword.get(opts, :req, Req)
 
@@ -231,6 +237,7 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
       {:ok,
        %{
          "threads" => Enum.filter(messages, &thread_root?/1),
+         "has_more" => result["has_more"],
          "response_metadata" => result["response_metadata"] || %{}
        }}
     end
@@ -272,7 +279,7 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
         "user" => stringify(user_id),
         "text" => text
       }
-      |> Map.merge(keyword_payload(opts, [:blocks, :attachments, :thread_ts]))
+      |> Map.merge(keyword_payload(opts, [:mrkdwn, :blocks, :attachments, :thread_ts]))
 
     api_post("chat.postEphemeral", payload, opts)
   end
@@ -344,12 +351,11 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
 
   defp resolve_token(opts) do
     Keyword.get(opts, :token) ||
-      Application.get_env(:jido_chat_slack, :slack_bot_token) ||
       raise ArgumentError,
-            "missing Slack bot token; pass :token option or configure :jido_chat_slack, :slack_bot_token"
+            "missing Slack bot token; pass :token"
   end
 
-  defp upload_bytes(%FileUpload{path: path, filename: filename})
+  defp upload_bytes(%{path: path, filename: filename})
        when is_binary(path) and path != "" do
     resolved_filename = filename || Path.basename(path)
 
@@ -365,16 +371,16 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
     end
   end
 
-  defp upload_bytes(%FileUpload{data: data, filename: filename})
+  defp upload_bytes(%{data: data, filename: filename})
        when is_binary(data) and data != "" and is_binary(filename) and filename != "" do
     {:ok, filename, data}
   end
 
-  defp upload_bytes(%FileUpload{data: data}) when is_binary(data) and data != "" do
+  defp upload_bytes(%{data: data}) when is_binary(data) and data != "" do
     {:error, :missing_filename}
   end
 
-  defp upload_bytes(%FileUpload{url: url}) when is_binary(url) and url != "" do
+  defp upload_bytes(%{url: url}) when is_binary(url) and url != "" do
     {:error, :unsupported_remote_url}
   end
 
@@ -417,18 +423,49 @@ defmodule Jido.Chat.Slack.Transport.ReqClient do
     end
   end
 
-  defp upload_alt_text(%FileUpload{} = upload) do
-    metadata = upload.metadata || %{}
+  # Completion can omit share timestamps. Never invent a message identity.
+  defp resolve_upload_share(%{"files" => [%{} = file | _]} = result, channel, file_id, opts, attempts) do
+    shares = file["shares"] || %{}
+
+    shared? =
+      Enum.any?(["public", "private"], fn kind ->
+        Enum.any?(get_in(shares, [kind, stringify(channel)]) || [], &is_binary(&1["ts"]))
+      end)
+
+    cond do
+      shared? ->
+        {:ok, result}
+
+      attempts == 0 ->
+        {:error, :upload_identity_unavailable}
+
+      true ->
+        if attempts < 3, do: Process.sleep(100)
+
+        with {:ok, info} <- api_post("files.info", %{"file" => file_id}, opts),
+             %{} = resolved <- info["file"] do
+          resolve_upload_share(Map.put(result, "files", [resolved]), channel, file_id, opts, attempts - 1)
+        else
+          {:error, _} -> {:error, :upload_identity_unavailable}
+          _ -> {:error, :upload_identity_unavailable}
+        end
+    end
+  end
+
+  defp resolve_upload_share(_, _, _, _, _), do: {:error, :upload_identity_unavailable}
+
+  defp upload_alt_text(%{} = upload) do
+    metadata = Map.get(upload, :metadata, %{})
     map_get(metadata, [:alt_text, "alt_text"])
   end
 
-  defp upload_title(%FileUpload{} = upload, fallback) do
-    metadata = upload.metadata || %{}
-    map_get(metadata, [:title, "title"]) || upload.filename || fallback
+  defp upload_title(%{} = upload, fallback) do
+    metadata = Map.get(upload, :metadata, %{})
+    map_get(metadata, [:title, "title"]) || Map.get(upload, :filename) || fallback
   end
 
-  defp upload_comment(%FileUpload{} = upload, opts) do
-    metadata = upload.metadata || %{}
+  defp upload_comment(%{} = upload, opts) do
+    metadata = Map.get(upload, :metadata, %{})
 
     Keyword.get(opts, :initial_comment) ||
       Keyword.get(opts, :caption) ||

@@ -12,6 +12,7 @@ defmodule Jido.Chat.Slack.EphemeralOptions do
               transport: Zoi.any() |> Zoi.default(ReqClient),
               req: Zoi.any() |> Zoi.nullish(),
               base_url: Zoi.string() |> Zoi.nullish(),
+              mrkdwn: Zoi.boolean() |> Zoi.nullish(),
               blocks: Zoi.any() |> Zoi.nullish(),
               attachments: Zoi.any() |> Zoi.nullish(),
               thread_ts: Zoi.any() |> Zoi.nullish()
@@ -37,6 +38,7 @@ defmodule Jido.Chat.Slack.EphemeralOptions do
   @spec payload_opts(t()) :: map()
   def payload_opts(%__MODULE__{} = opts) do
     %{}
+    |> maybe_put("mrkdwn", opts.mrkdwn)
     |> maybe_put("blocks", opts.blocks)
     |> maybe_put("attachments", opts.attachments)
     |> maybe_put("thread_ts", opts.thread_ts && to_string(opts.thread_ts))

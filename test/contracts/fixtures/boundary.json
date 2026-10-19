@@ -1,0 +1,115 @@
+{
+  "capabilities": {
+    "send_message": "native",
+    "send_file": "native",
+    "edit_message": "native",
+    "delete_message": "native",
+    "mark_as_read": "native",
+    "fetch_metadata": "native",
+    "fetch_thread": "native",
+    "fetch_message": "native",
+    "get_user": "native",
+    "fetch_subject": "native",
+    "get_thread_participants": "native",
+    "download_file": "native",
+    "add_reaction": "native",
+    "remove_reaction": "native",
+    "post_ephemeral": "native",
+    "open_dm": "native",
+    "fetch_messages": "native",
+    "list_threads": "native",
+    "open_modal": "native",
+    "load_options": "native",
+    "stream_text": "unsupported",
+    "start_typing": "unsupported",
+    "create_thread": "unsupported"
+  },
+  "events": [
+    "Jido.Chat.Signal.MessageReceived",
+    "Jido.Chat.Signal.MessageUpdated",
+    "Jido.Chat.Signal.MessageDeleted",
+    "Jido.Chat.Signal.ReactionAdded",
+    "Jido.Chat.Signal.ReactionRemoved",
+    "Jido.Chat.Signal.ActionReceived",
+    "Jido.Chat.Signal.ModalSubmitted",
+    "Jido.Chat.Signal.ModalClosed",
+    "Jido.Chat.Signal.OptionsRequested",
+    "Jido.Chat.Signal.SlashCommandReceived",
+    "Jido.Chat.Signal.AssistantThreadStarted",
+    "Jido.Chat.Signal.AssistantContextChanged",
+    "Jido.Chat.Signal.MembershipChanged",
+    "Jido.Chat.Signal.NormalizationFailed"
+  ],
+  "exports": {
+    "Jido.Chat.Slack": [
+      [
+        "actions",
+        0
+      ],
+      [
+        "adapter",
+        0
+      ],
+      [
+        "event_definitions",
+        0
+      ],
+      [
+        "operations",
+        0
+      ],
+      [
+        "signal_definitions",
+        0
+      ]
+    ],
+    "Jido.Chat.Slack.Adapter": [
+      [
+        "capabilities",
+        0
+      ],
+      [
+        "channel_type",
+        0
+      ],
+      [
+        "default_transport",
+        0
+      ],
+      [
+        "event_definitions",
+        0
+      ],
+      [
+        "invoke",
+        3
+      ],
+      [
+        "normalize",
+        3
+      ],
+      [
+        "operations",
+        0
+      ]
+    ],
+    "Jido.Chat.Slack.Source": [
+      [
+        "key",
+        2
+      ],
+      [
+        "mode",
+        0
+      ],
+      [
+        "signal_types",
+        0
+      ],
+      [
+        "start_link",
+        3
+      ]
+    ]
+  }
+}

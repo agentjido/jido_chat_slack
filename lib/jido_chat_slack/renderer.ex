@@ -43,7 +43,7 @@ defmodule Jido.Chat.Slack.Renderer do
       {:ok,
        %{
          blocks: blocks,
-         text: Card.fallback_text(card),
+         text: Card.fallback_text(%{card | components: Enum.map(card.components, &fallback_component/1)}),
          fallback_used: fallback_used
        }}
     end
@@ -111,6 +111,24 @@ defmodule Jido.Chat.Slack.Renderer do
         end
     end
   end
+
+  # Shared Markdown table cells currently require text. Keep numeric Block Kit
+  # cells in the rendered body and convert them only for the text fallback.
+  defp fallback_component(%Component{kind: :table} = component) do
+    %{
+      component
+      | rows:
+          Enum.map(component.rows, fn row ->
+            Enum.map(row, fn
+              value when is_number(value) -> to_string(value)
+              value -> value
+            end)
+          end)
+    }
+  end
+
+  defp fallback_component(%Component{} = component),
+    do: %{component | items: Enum.map(component.items, &fallback_component/1)}
 
   defp card_header_blocks(card) do
     []

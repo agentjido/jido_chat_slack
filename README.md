@@ -1,71 +1,135 @@
 # Jido Chat Slack
 
-[![Hex.pm](https://img.shields.io/hexpm/v/jido_chat_slack.svg)](https://hex.pm/packages/jido_chat_slack)
-[![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/jido_chat_slack/)
-[![CI](https://github.com/agentjido/jido_chat_slack/actions/workflows/ci.yml/badge.svg)](https://github.com/agentjido/jido_chat_slack/actions/workflows/ci.yml)
-[![License](https://img.shields.io/hexpm/l/jido_chat_slack.svg)](https://github.com/agentjido/jido_chat_slack/blob/main/LICENSE)
-[![Website](https://img.shields.io/badge/website-jido.run-0f172a.svg)](https://jido.run)
-[![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
-[![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
+## V3 checkpoint
 
-`jido_chat_slack` provides the `Jido.Chat.Slack.Adapter` adapter for the public Chat Signal contract.
+This branch requires the Jido v3 Chat API. All dependencies use Hex.
+`jido_chat ~> 3.0.0-dev` is not published as of 2026-10-19.
+Dependency resolution and tests remain blocked until a compatible release is available.
+The lock file retains existing Hex entries; resolve it again after publication.
 
-## Release status
-
-This branch proposes version 2.0. It changes the public communication API.
-Use the immutable PR source commits for review and tests. The new Hex releases
-are not yet published. Production requires Chat 2.0 and compatible upstream
-Signal releases. The dependency helpers keep source pins in development and test.
-
-## Typed operations
-
-The application supplies private binding options and a provider room ID:
+Slack provider for the stateless Jido Chat SDK. Clients contain configuration.
+Client construction starts no process and makes no network request.
 
 ```elixir
-{:ok, binding} = Jido.Chat.bind(Jido.Chat.Slack.Adapter, private_binding_options)
-request = Jido.Chat.Signal.SendMessage.new!(%{
-  "request_id" => "request-1",
-  "room_id" => provider_room_id,
-  "text" => "Hello"
-})
-{:ok, result} = Jido.Chat.execute(binding, request)
+client = Jido.Chat.Client.new!(Jido.Chat.Slack.Adapter,
+  id: "support.slack",
+  credentials: %{token: System.fetch_env!("SLACK_BOT_TOKEN")}
+)
+
+{:ok, completed} = Jido.Chat.send_text(client, room_id, "Hello")
+message_id = completed.data["result"]["id"]
+
+{:ok, delivery} = Jido.Chat.normalize(client, provider_input)
 ```
 
-The result is an OperationCompleted or OperationFailed signal. Repeating an
-admitted request uses its saved result. Private tokens, clients and resources
-stay outside signal data. Unsupported operations return a defined typed result.
+Chat requests, results, and incoming events are Jido Signals. Use
+`Jido.Chat.operations(client)` and `Jido.Chat.event_definitions(client)` to build
+host catalogs and routes. Core Chat Actions handle messages, files, reactions,
+threads, users, history, ephemeral messages, modals, and option queries.
+`Jido.Chat.Slack.SendCard` is the native Slack card Action. Its request definition
+is `Jido.Chat.Slack.Signal.SendCard`. Use `Jido.Chat.Slack.operations/0` to find
+Slack extensions. Old message and file structs and adapter helper APIs are removed.
 
-## Inbound delivery
+See the [capability audit](guides/capabilities.md) for all 23 shared operations,
+live evidence, permission limits, and Slack features that are not yet available.
+See the [contract guide](guides/contracts.md) for Covenant and privacy limits.
 
-Normalize one complete verified provider input unit with the configured binding:
+Plain text disables Slack markup. Markdown uses Slack markup. Chat keyboards use
+Block Kit buttons. HTML is unsupported. File keyboards and explicit plain/HTML caption formats return `unsupported`.
+File input uses base64 content and a
+filename, or a portable resource reference. The host must supply a private
+`:file_resolver` function for upload references. The function receives the
+reference and returns `{:ok, %{path: path, filename: filename}}` or
+`{:ok, %{data: bytes, filename: filename}}`. File bytes and paths stay out of Signals. Downloads with the default transport
+accept only HTTPS references on `files.slack.com`. Redirects to other hosts do
+not carry the bot authorization header.
+
+## Socket Mode input
+
+The host owns the shared Sensor. `Jido.Chat.Slack.Source` starts a linked,
+receive-only worker. It opens a Socket Mode connection, normalizes input, and
+calls the shared Sensor. It sends a protocol ACK only after Sensor admission.
+An ACK does not confirm storage or chat delivery. The worker sends no chat replies.
+The worker reconnects with a fresh URL after disconnect and closes its socket on
+shutdown. Use one Sensor per app token.
 
 ```elixir
-{:ok, delivery} = Jido.Chat.normalize_event(binding, verified_provider_input)
-{:ok, observations} = MyApp.Messaging.accept_delivery(delivery)
+client = Jido.Chat.Client.new!(Jido.Chat.Slack.Adapter,
+  id: "support.slack",
+  credentials: %{
+    token: System.fetch_env!("SLACK_BOT_TOKEN"),
+    app_token: System.fetch_env!("SLACK_APP_TOKEN")
+  }
+)
+
+{:ok, sensor} = Jido.Chat.Sensor.start_link(
+  client: client,
+  source: Jido.Chat.Slack.Source,
+  rooms: [System.fetch_env!("SLACK_TEST_CHANNEL_ID")],
+  emit: "jido.chat.message.received",
+  dispatch: {:pid, target: self()}
+)
 ```
 
-The Messaging instance owns runtime acceptance. Deliveries retain ordered facts
-and explicit item failures. Membership evidence does not create grants or start
-message handlers. A rejected listener sink follows the provider checkpoint rule.
-Configure protocol version 1 before starting provider listeners.
+For an Agent with `Jido.Chat.Plugin`, add this connection inside its `chat` block:
 
-## Operation support
+```elixir
+connection :slack do
+  client Jido.Chat.Slack.Adapter,
+    id: "support.slack",
+    credentials: %{token: bot_token, app_token: app_token}
 
-Native: `send_message`, `send_file`, `post_message`, `edit_message`, `delete_message`, `fetch_metadata`, `fetch_thread`, `fetch_message`, `get_user`, `fetch_subject`, `get_thread_participants`, `mark_as_read`, `fetch_media`, `add_reaction`, `remove_reaction`, `post_ephemeral`, `open_modal`, `load_options`, `fetch_messages`, `fetch_channel_messages`, `list_threads`, `open_thread`, `open_dm`.
+  rooms [slack_channel_id]
+  commands [Jido.Chat.SendMessage, Jido.Chat.EditMessage, Jido.Chat.AddReaction]
+  source Jido.Chat.Slack.Source, emit: "jido.chat.message.received"
+end
+```
 
-Fallback: `post_channel_message`, `stream`.
+The Plugin owns `Jido.Chat.Sensor`. Add an Agent route for each emitted fact type.
+Route commands to `Jido.Chat.Plugin.Execute`. The reply Action builds and emits a
+core Chat command Signal. No custom Sensor or runtime topology is needed.
 
-All other operations are explicitly unsupported. See the frozen [adapter matrix](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/adapter-matrix.json).
+Enable Socket Mode and subscribe to the required bot events in Slack app settings.
+The app token needs `connections:write`. For channel message input, subscribe to
+`message.channels`. The bot must have access to the selected channel. Credentials
+and app permissions remain host configuration. Webhook hosts must verify
+signatures before they call `Jido.Chat.normalize/3`.
 
-## Provider setup
+Private Source options include `:connection_client`, `:socket_client`,
+`:connection_options`, `:socket_options`, `:reconnect_interval` (1,000 ms),
+`:max_reconnect_interval` (30,000 ms), and `:push_timeout` (2,000 ms).
+Tests can replace the connection and socket clients without a network connection.
 
-Slack supports verified webhooks and optional Socket Mode. The adapter keeps acknowledgement order explicit. Modal tokens and conversation references remain private. Dynamic options use the configured loader.
+## Development
 
-## Checks and migration
+Use the local Chat and current Core packages:
 
-Run `mix test` and `mix quality`. Live tests stay excluded by default. The fixed
-provider fixtures do not need credentials or live traffic.
+```sh
+mix deps.get
+mix format --check-formatted
+mix compile --warnings-as-errors
+mix quality
+mix test
+mix test.contracts
+mix coveralls
+```
 
-See the [migration guide](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/MIGRATION_GUIDE.md)
-for API mappings, the complete runnable local example, limits, release order and
-rollback pins. Run `mix docs` to build this package's API documentation.
+Default tests exclude `:live`. Live tests load `.env` and `.env.test`. Required
+keys are `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, and `SLACK_TEST_CHANNEL_ID`.
+The local environment can also contain `SLACK_TEST_USER_ID` and
+`SLACK_SIGNING_SECRET`. Never commit credentials.
+
+```sh
+RUN_LIVE_SLACK_TESTS=true SLACK_TEST_WORKSPACE=ebosslabs mix test --include live
+```
+
+`SLACK_TEST_WORKSPACE` selects the workspace name checked with `auth.test` before
+messages are sent. It defaults to `epicfirm`. The live suite tests message
+operations, thread and history queries, DM opening, ephemeral API acceptance,
+user/participant lookup, read cursor, upload/download, a card, Socket Mode admission, and an Agent Plugin reply.
+Test messages are removed after each test. The optional download test needs
+`SLACK_TEST_FILE_URL` and `SLACK_TEST_FILE_CONTENT`. File upload needs
+`files:write`; message identity recovery and download need `files:read`. The approved
+EBoss Labs installation has these scopes. The optional screen test needs
+`RUN_LIVE_SLACK_UI_TESTS=true`; see the [test matrix](guides/test-matrix.md). See the
+[capability audit](guides/capabilities.md) for the exact limits of these tests.
