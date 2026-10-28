@@ -15,6 +15,8 @@ defmodule Jido.Chat.Slack.AdapterContractTest do
   @tag obligation: "jido_chat_slack.adapter.I1"
   test "public exports, capability statuses and catalogs are explicit and have no I/O" do
     client = F.client()
+    assert :ok = Chat.AdapterTestKit.Assertions.assert_capability_coherence(Chat.Slack.Adapter)
+    assert :ok = Chat.AdapterTestKit.Assertions.assert_unsupported_operations(client)
 
     for {name, exports} <- F.boundary()["exports"] do
       module = F.module(name)
