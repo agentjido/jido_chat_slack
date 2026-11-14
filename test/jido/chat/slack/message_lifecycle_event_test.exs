@@ -47,7 +47,7 @@ defmodule Jido.Chat.Slack.MessageLifecycleEventTest do
     assert event.data["item_id"] =~ "Ev-update-1"
     refute Map.has_key?(event.data, "raw")
     refute Map.has_key?(event.data, "previous_message")
-    assert {:ok, wire} = Jido.Signal.Serialization.serialize(event)
+    assert {:ok, wire} = Jido.Signal.Codec.serialize(event)
     refute wire =~ "before"
   end
 
@@ -119,7 +119,7 @@ defmodule Jido.Chat.Slack.MessageLifecycleEventTest do
     refute Map.has_key?(event.data, "text")
     refute Map.has_key?(event.data, "raw")
     refute Map.has_key?(event.data, "previous_message")
-    assert {:ok, wire} = Jido.Signal.Serialization.serialize(event)
+    assert {:ok, wire} = Jido.Signal.Codec.serialize(event)
     refute wire =~ "deleted text must not become lifecycle content"
   end
 

@@ -191,7 +191,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
 
   test "file upload succeeds or reports the installed permission limit", ctx do
     if "files:write" in ctx.scopes do
-      filename = "jido-proof-" <> Jido.Signal.ID.generate!() <> ".txt"
+      filename = "jido-proof-" <> Jido.Id.uuid7() <> ".txt"
       # File deletion is separate from message deletion in Slack.
       on_exit(fn ->
         {:ok, response} =
@@ -296,7 +296,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
     # Wait for the connection to finish before the test message is sent.
     worker = :sys.get_state(sensor).worker
     await_socket(worker, 100)
-    marker = "Jido Socket Mode proof " <> Jido.Signal.ID.generate!()
+    marker = "Jido Socket Mode proof " <> Jido.Id.uuid7()
     root = execute(ctx.client, Chat.Signal.SendMessage, %{"room_id" => ctx.room, "text" => marker})
     on_exit(fn -> delete(ctx.client, ctx.room, root["id"]) end)
     incoming = await_text(marker)
@@ -319,7 +319,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
     {:ok, _} = Application.ensure_all_started(:jido)
     start_supervised!({Jido, name: Jido.Chat.Slack.LiveTestJido})
     definition = Jido.Chat.Slack.LiveAgent.definition()
-    [entry] = definition.extensions
+    [entry] = definition.plugins
     [connection] = entry.data.connections
     client = %{ctx.client | id: "slack/live-agent"}
 
@@ -329,11 +329,11 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
         client: Map.take(client, [:adapter, :id, :credentials, :config, :transport])
     }
 
-    definition = %{definition | extensions: [%{entry | data: %{entry.data | connections: [connection]}}]}
+    definition = %{definition | plugins: [%{entry | data: %{entry.data | connections: [connection]}}]}
     {:ok, server} = Jido.start_agent(Jido.Chat.Slack.LiveTestJido, definition, id: "slack-live-proof")
     :ok = Jido.AgentServer.await_ready(server)
     Process.sleep(1_500)
-    marker = "Jido Agent proof " <> Jido.Signal.ID.generate!()
+    marker = "Jido Agent proof " <> Jido.Id.uuid7()
     root = execute(ctx.client, Chat.Signal.SendMessage, %{"room_id" => ctx.room, "text" => marker})
     on_exit(fn -> delete(ctx.client, ctx.room, root["id"]) end)
     result = await_agent_reply(server, 200)
@@ -403,7 +403,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
     assert submitted.data["values"]["proof"] == "Jido UI proof"
 
     for fact <- [action, submitted] do
-      assert {:ok, json} = Jido.Signal.Serialization.serialize(fact)
+      assert {:ok, json} = Jido.Signal.Codec.serialize(fact)
       refute json =~ trigger
       refute json =~ "response_url"
       assert {:ok, decoded} = Jido.Signal.Catalog.decode(Chat.catalog(ctx.client), json)
@@ -429,7 +429,7 @@ defmodule Jido.Chat.Slack.LiveIntegrationTest do
   defp await_agent_reply(_, 0), do: flunk("Agent did not send a reply")
 
   defp await_agent_reply(server, tries) do
-    case Jido.AgentServer.agent(server).state.result do
+    case Jido.AgentServer.snapshot(server).agent.state.result do
       nil ->
         Process.sleep(100)
         await_agent_reply(server, tries - 1)

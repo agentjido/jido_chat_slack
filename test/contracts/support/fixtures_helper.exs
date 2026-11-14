@@ -80,7 +80,7 @@ defmodule Jido.Chat.Slack.ContractFixtures do
   end
 
   def round_trip(client, signal) do
-    assert {:ok, json} = Jido.Signal.Serialization.serialize(signal)
+    assert {:ok, json} = Jido.Signal.Codec.serialize(signal)
 
     for secret <- ["fixture-token:", "fixture-app:", "private-trigger", "private-response", "never-project-this"],
         do: refute(json =~ secret)

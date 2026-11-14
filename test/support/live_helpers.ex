@@ -5,7 +5,7 @@ defmodule Jido.Chat.Slack.LiveHelpers do
   @trace "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
   @doc "Builds a live request with fixed trace context."
   def request(client, definition, data) do
-    definition.new!(Map.merge(%{"client_id" => client.id, "request_id" => Jido.Signal.ID.generate!()}, data),
+    definition.new!(Map.merge(%{"client_id" => client.id, "request_id" => Jido.Id.uuid7()}, data),
       source: client.source,
       extensions: %{"traceparent" => @trace, "tracestate" => "test=slack-live"}
     )
@@ -29,7 +29,7 @@ defmodule Jido.Chat.Slack.LiveHelpers do
 
   @doc "Calls a public Chat helper and validates its completion context."
   def facade(client, method, arguments, options \\ []) do
-    request_id = Jido.Signal.ID.generate!()
+    request_id = Jido.Id.uuid7()
 
     options =
       Keyword.merge(options,
@@ -55,7 +55,7 @@ defmodule Jido.Chat.Slack.LiveHelpers do
     assert complete.extensions["traceparent"] == @trace
     assert complete.extensions["tracestate"] == "test=slack-live"
     assert is_binary(complete.extensions["jidocausationid"])
-    assert {:ok, json} = Jido.Signal.Serialization.serialize(complete)
+    assert {:ok, json} = Jido.Signal.Codec.serialize(complete)
     refute json =~ "xoxb-"
     refute json =~ "xapp-"
     assert {:ok, decoded} = Jido.Signal.Catalog.decode(Chat.catalog(client), json)

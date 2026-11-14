@@ -243,7 +243,7 @@ defmodule Jido.Chat.Slack.SourceContractTest do
     {:ok, _} = Application.ensure_all_started(:jido)
     start_supervised!({Jido, name: Jido.Chat.Slack.ContractJido})
     definition = Jido.Chat.Slack.LiveAgent.definition()
-    [entry] = definition.extensions
+    [entry] = definition.plugins
     [connection] = entry.data.connections
     Process.register(self(), F.Observer)
     on_exit(fn -> if Process.whereis(F.Observer) == self(), do: Process.unregister(F.Observer) end)
@@ -267,7 +267,7 @@ defmodule Jido.Chat.Slack.SourceContractTest do
           )
     }
 
-    definition = %{definition | extensions: [%{entry | data: %{entry.data | connections: [connection]}}]}
+    definition = %{definition | plugins: [%{entry | data: %{entry.data | connections: [connection]}}]}
     {:ok, server} = Jido.start_agent(Jido.Chat.Slack.ContractJido, definition, id: "slack-contract-agent")
     on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
     assert :ok = Jido.AgentServer.await_ready(server)
@@ -353,7 +353,7 @@ defmodule Jido.Chat.Slack.SourceContractTest do
   defp await_result(_, 0), do: flunk("Agent result was not recorded")
 
   defp await_result(server, count) do
-    case Jido.AgentServer.agent(server).state.result do
+    case Jido.AgentServer.snapshot(server).agent.state.result do
       nil ->
         Process.sleep(10)
         await_result(server, count - 1)

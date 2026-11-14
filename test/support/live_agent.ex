@@ -31,11 +31,10 @@ end
 
 defmodule Jido.Chat.Slack.LiveAgent do
   @moduledoc false
-  use Jido.Agent, name: "slack_live_agent"
+  use Jido.Agent, name: "slack_live_agent", plugins: [Jido.Chat.Plugin]
 
-  agent do
-    plugin(Jido.Chat.Plugin)
-    schema(Zoi.object(%{result: Zoi.any() |> Zoi.default(nil)}))
+  state do
+    schema(Jido.Joi.object(%{result: Zoi.any() |> Zoi.default(nil)}))
   end
 
   chat do
@@ -48,9 +47,9 @@ defmodule Jido.Chat.Slack.LiveAgent do
   end
 
   routes do
-    route("jido.chat.message.received", Jido.Chat.Slack.LiveAgent.Reply, emits: ["jido.chat.command.send_message"])
-    route("jido.chat.command.send_message", Jido.Chat.Plugin.Execute, emits: [])
-    route("jido.chat.command.send_message.completed", Jido.Chat.Slack.LiveAgent.Record, emits: [])
-    route("jido.chat.command.send_message.failed", Jido.Chat.Slack.LiveAgent.Record, emits: [])
+    route("jido.chat.message.received", Jido.Chat.Slack.LiveAgent.Reply)
+    route("jido.chat.command.send_message", Jido.Chat.Plugin.Execute)
+    route("jido.chat.command.send_message.completed", Jido.Chat.Slack.LiveAgent.Record)
+    route("jido.chat.command.send_message.failed", Jido.Chat.Slack.LiveAgent.Record)
   end
 end

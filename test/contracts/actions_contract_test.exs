@@ -43,7 +43,7 @@ defmodule Jido.Chat.Slack.ActionsContractTest do
       F.plan(row["plan"])
       request = F.request(row, client)
       action = F.module(row["action"])
-      assert {:ok, encoded} = Jido.Signal.Serialization.serialize(request)
+      assert {:ok, encoded} = Jido.Signal.Codec.serialize(request)
 
       assert {:ok, decoded} = Jido.Signal.Catalog.decode(Chat.catalog(client), encoded)
 

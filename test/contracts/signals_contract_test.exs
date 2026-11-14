@@ -70,7 +70,7 @@ defmodule Jido.Chat.Slack.SignalsContractTest do
         assert {:ok, delivery} = Chat.normalize(client, fixture["payload"])
         assert [fact] = delivery.signals
         assert fact.type == fixture["type"], fixture["name"]
-        assert %Jido.Signal.Trace{} = Jido.Signal.Trace.get(fact)
+        assert %Jido.Trace{} = Jido.Signal.Context.get_trace(fact)
         F.subset(fact.data, fixture["expected"])
         assert fact.source == client.source
         assert fact.data["delivery_id"] == delivery.id

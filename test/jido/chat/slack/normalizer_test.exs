@@ -25,7 +25,7 @@ defmodule Jido.Chat.Slack.NormalizerTest do
     catalog = Jido.Signal.Catalog.new!(Jido.Chat.signal_definitions())
 
     for fact <- delivery.signals do
-      assert {:ok, json} = Jido.Signal.Serialization.serialize(fact)
+      assert {:ok, json} = Jido.Signal.Codec.serialize(fact)
       assert {:ok, ^fact} = Jido.Signal.Catalog.decode(catalog, json)
       refute Map.has_key?(fact.data, "raw")
       refute json =~ "private-trigger"
