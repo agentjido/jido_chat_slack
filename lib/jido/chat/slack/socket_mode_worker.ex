@@ -1,10 +1,9 @@
 defmodule Jido.Chat.Slack.SocketModeWorker do
   @moduledoc """
-  Bridge-ingress worker for Slack Socket Mode envelopes.
+  Connection worker for Slack Socket Mode envelopes.
 
-  The worker opens a Socket Mode connection, acknowledges envelopes, and emits
-  the inner payloads through `sink_mfa` using `:payload` ingress so the runtime
-  can reuse the adapter's existing event normalization.
+  The worker opens a Socket Mode connection and emits inner payloads through
+  `sink_mfa`. It acknowledges an envelope only after the sink accepts it.
   """
 
   use GenServer
@@ -15,7 +14,6 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
   @type sink_mfa :: {module(), atom(), [term()]}
 
   @type state :: %{
-          bridge_id: String.t(),
           sink_mfa: sink_mfa(),
           sink_opts: keyword(),
           app_token: String.t(),
@@ -41,20 +39,16 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
 
   @impl true
   def init(opts) do
-    bridge_id = Keyword.fetch!(opts, :bridge_id)
+    Process.flag(:sensitive, true)
     sink_mfa = Keyword.fetch!(opts, :sink_mfa)
 
     app_token =
-      opts[:app_token] || Application.get_env(:jido_chat_slack, :slack_app_token) ||
-        raise(
-          ArgumentError,
-          "missing Slack app token; pass :app_token option or configure :jido_chat_slack, :slack_app_token"
-        )
+      opts[:app_token] ||
+        raise(ArgumentError, "missing Slack app token; pass :app_token option")
 
     reconnect_interval_ms = normalize_pos_integer(opts[:reconnect_interval_ms], 250)
 
     state = %{
-      bridge_id: bridge_id,
       sink_mfa: sink_mfa,
       sink_opts: Keyword.get(opts, :sink_opts, []),
       app_token: app_token,
@@ -74,6 +68,19 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
 
     send(self(), :connect)
     {:ok, state}
+  end
+
+  @impl true
+  def format_status(status) do
+    Map.new(status, fn
+      {:state, _state} -> {:state, :redacted}
+      {:message, _message} -> {:message, :redacted}
+      {:reason, reason} when is_atom(reason) -> {:reason, reason}
+      {:reason, _reason} -> {:reason, :redacted}
+      {:log, _log} -> {:log, []}
+      {:dictionary, _dictionary} -> {:dictionary, []}
+      entry -> entry
+    end)
   end
 
   @impl true
@@ -159,24 +166,14 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
   defp route_payload_envelope(state, envelope, raw_payload) do
     case map_get(envelope, [:payload, "payload"]) do
       payload when is_map(payload) ->
-        if accepts_response_payload?(envelope) do
-          sink_result =
-            invoke_sink(state.sink_mfa, payload, build_sink_opts(state, envelope, raw_payload))
+        sink_result =
+          invoke_sink(state.sink_mfa, payload, build_sink_opts(state, envelope, raw_payload))
 
-          acknowledge_envelope(state, envelope, sink_result)
-        else
-          state
-          |> acknowledge_envelope(envelope, nil)
-          |> then(fn next_state ->
-            _ =
-              invoke_sink(
-                next_state.sink_mfa,
-                payload,
-                build_sink_opts(next_state, envelope, raw_payload)
-              )
-
-            next_state
-          end)
+        case sink_result do
+          :ok -> acknowledge_envelope(state, envelope, nil)
+          {:ok, _} -> acknowledge_envelope(state, envelope, sink_result)
+          {:reply, _} -> acknowledge_envelope(state, envelope, sink_result)
+          _ -> state
         end
 
       _payload ->
@@ -298,10 +295,6 @@ defmodule Jido.Chat.Slack.SocketModeWorker do
   end
 
   defp socket_path_segment(_type), do: "event"
-
-  defp accepts_response_payload?(envelope) do
-    map_get(envelope, [:accepts_response_payload, "accepts_response_payload"]) == true
-  end
 
   defp normalize_path_prefix(path_prefix) when is_binary(path_prefix) do
     normalized =

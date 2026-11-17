@@ -6,7 +6,7 @@ defmodule Jido.Chat.Slack.Renderer do
   such as charts, use the canonical accessible text fallback.
   """
 
-  alias Jido.Chat.{Card, Modal, OptionsLoadResult}
+  alias Jido.Chat.{Card, Modal}
   alias Jido.Chat.Card.Component
   alias Jido.Chat.Modal.Element
 
@@ -81,23 +81,24 @@ defmodule Jido.Chat.Slack.Renderer do
   end
 
   @doc "Renders normalized dynamic options as a Slack options-load response."
-  @spec options_response(OptionsLoadResult.t() | map()) :: {:ok, map()} | {:error, term()}
-  def options_response(result) do
-    result = OptionsLoadResult.new(result)
+  @spec options_response(map()) :: {:ok, map()} | {:error, term()}
+  def options_response(result) when is_map(result) do
+    options = result[:options] || result["options"] || []
+    option_groups = result[:option_groups] || result["option_groups"] || []
 
     cond do
-      result.options != [] and result.option_groups != [] ->
+      options != [] and option_groups != [] ->
         {:error, {:provider_validation, :options_and_groups_are_mutually_exclusive}}
 
-      length(result.options) > @option_limit ->
+      length(options) > @option_limit ->
         provider_limit(:options, @option_limit)
 
-      length(result.option_groups) > @option_limit ->
+      length(option_groups) > @option_limit ->
         provider_limit(:option_groups, @option_limit)
 
       true ->
-        with {:ok, options} <- render_load_options(result.options),
-             {:ok, groups} <- render_load_groups(result.option_groups) do
+        with {:ok, options} <- render_load_options(options),
+             {:ok, groups} <- render_load_groups(option_groups) do
           response =
             %{}
             |> maybe_put("options", options, options != [])
@@ -108,6 +109,8 @@ defmodule Jido.Chat.Slack.Renderer do
         end
     end
   end
+
+  def options_response(_), do: {:error, {:provider_validation, :options}}
 
   defp card_header_blocks(card) do
     []
@@ -475,16 +478,20 @@ defmodule Jido.Chat.Slack.Renderer do
   end
 
   defp render_load_options(options),
-    do: map_ok(options, &render_option(&1.label, &1.value, &1.description))
+    do: map_ok(options, &render_option(value(&1, :label), value(&1, :value), value(&1, :description)))
 
   defp render_load_groups(groups) do
     map_ok(groups, fn group ->
-      if length(group.options) > @option_limit do
+      options = value(group, :options) || []
+
+      if length(options) > @option_limit do
         provider_limit(:group_options, @option_limit)
       else
-        with :ok <- text_limit(group.label, @option_label_limit, :option_group_label),
-             {:ok, options} <- render_load_options(group.options) do
-          {:ok, %{"label" => plain_text(group.label), "options" => options}}
+        label = value(group, :label)
+
+        with :ok <- text_limit(label, @option_label_limit, :option_group_label),
+             {:ok, options} <- render_load_options(options) do
+          {:ok, %{"label" => plain_text(label), "options" => options}}
         end
       end
     end)
@@ -664,6 +671,8 @@ defmodule Jido.Chat.Slack.Renderer do
   defp provider_modal?(payload) do
     (payload[:type] || payload["type"]) in [:modal, "modal"]
   end
+
+  defp value(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
   defp compact(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 

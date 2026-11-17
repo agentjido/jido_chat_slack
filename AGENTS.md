@@ -16,7 +16,7 @@
 - Keep live Slack tests excluded by default with the `:live` tag.
 - Do not commit `.env` or credentials.
 - Keep Socket Mode ingress optional and adapter-scoped.
-- Preserve the adapter boundary; supervised runtime concerns belong in `jido_messaging`.
+- Preserve the adapter boundary; managed runtime concerns belong in Jido Chat core.
 
 ## Release Hygiene
 

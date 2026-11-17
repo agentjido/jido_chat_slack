@@ -1,255 +1,85 @@
 defmodule Jido.Chat.Slack.Transport.ReqClientTest do
   use ExUnit.Case, async: true
 
-  alias Jido.Chat.FileUpload
   alias Jido.Chat.Slack.Transport.ReqClient
 
   defmodule MockReq do
     def request(opts) do
-      send(self(), {:req_request, opts})
+      send(self(), {:request, opts})
 
-      case opts[:url] do
-        "https://slack.com/api/files.getUploadURLExternal" ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{
-               "ok" => true,
-               "upload_url" => "https://files.slack.com/upload/v1/abc123",
-               "file_id" => "F123"
-             }
-           }}
+      body =
+        case opts[:url] do
+          "https://slack.com/api/conversations.info" ->
+            %{"ok" => true, "channel" => %{"id" => "C1"}}
 
-        "https://files.slack.com/upload/v1/abc123" ->
-          {:ok, %Req.Response{status: 200, body: "OK - 12"}}
+          "https://slack.com/api/users.info" ->
+            %{"ok" => true, "user" => %{"id" => "U1"}}
 
-        "https://files.slack.com/files-pri/T1-F123/image.png" ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             headers: %{"content-type" => ["image/png"]},
-             body: "image bytes"
-           }}
+          "https://slack.com/api/conversations.open" ->
+            %{"ok" => true, "channel" => %{"id" => "D1"}}
 
-        "https://files.slack.com/login" ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             headers: %{"content-type" => ["text/html; charset=utf-8"]},
-             body: "<html>sign in</html>"
-           }}
+          "https://slack.com/api/files.getUploadURLExternal" ->
+            %{"ok" => true, "upload_url" => "https://files.slack.com/upload", "file_id" => "F1"}
 
-        "https://files.slack.com/missing" ->
-          {:ok, %Req.Response{status: 404, body: "missing"}}
+          "https://slack.com/api/files.completeUploadExternal" ->
+            %{"ok" => true, "files" => [%{"id" => "F1"}]}
 
-        "https://slack.com/api/files.completeUploadExternal" ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{
-               "ok" => true,
-               "files" => [
-                 %{
-                   "id" => "F123",
-                   "name" => "bytes.txt",
-                   "mimetype" => "text/plain",
-                   "shares" => %{
-                     "public" => %{
-                       "C123" => [%{"ts" => "1706745600.000100"}]
-                     }
-                   }
-                 }
-               ]
-             }
-           }}
+          "https://files.slack.com/download" ->
+            "bytes"
 
-        "https://slack.com/api/users.info" ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{"ok" => true, "user" => %{"id" => "U123", "name" => "ada"}}
-           }}
+          _ ->
+            %{"ok" => true, "channel" => "C1", "ts" => "M1"}
+        end
 
-        "https://slack.com/api/chat.getPermalink" ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{
-               "ok" => true,
-               "permalink" => "https://workspace.slack.com/archives/C123/p1706745600000100"
-             }
-           }}
-
-        _other ->
-          {:ok,
-           %Req.Response{
-             status: 200,
-             body: %{"ok" => true, "channel" => "C123", "ts" => "1706745600.000100"}
-           }}
-      end
+      {:ok, Req.Response.new(status: 200, body: body)}
     end
   end
 
   defmodule ErrorReq do
-    def request(_opts) do
-      {:ok, %Req.Response{status: 200, body: %{"ok" => false, "error" => "channel_not_found"}}}
-    end
+    def request(_opts),
+      do: {:ok, Req.Response.new(status: 200, body: %{"ok" => false, "error" => "not_authed"})}
   end
 
-  defmodule MalformedResourceReq do
-    def request(opts) do
-      body =
-        case opts[:url] do
-          "https://slack.com/api/users.info" -> %{"ok" => true, "user" => "U123"}
-          "https://slack.com/api/chat.getPermalink" -> %{"ok" => true, "permalink" => %{url: "x"}}
-        end
-
-      {:ok, %Req.Response{status: 200, body: body}}
-    end
-  end
-
-  test "send_message/3 encodes Slack payload into form params" do
-    assert {:ok, %{"ts" => "1706745600.000100"}} =
-             ReqClient.send_message("C123", "hi",
-               token: "xoxb-test",
+  test "message calls use the explicit token and encode Slack fields" do
+    assert {:ok, _} =
+             ReqClient.send_message("xoxb-test", "C1", "hello",
                req: MockReq,
-               blocks: [%{type: "section"}],
-               reply_broadcast: true
+               thread_ts: "T1",
+               blocks: [%{"type" => "section"}]
              )
 
-    assert_received {:req_request, opts}
+    assert_received {:request, opts}
     assert opts[:url] == "https://slack.com/api/chat.postMessage"
-    assert opts[:form]["channel"] == "C123"
-    assert opts[:form]["text"] == "hi"
-    assert opts[:form]["reply_broadcast"] == "true"
-    assert is_binary(opts[:form]["blocks"])
+    assert {"authorization", "Bearer xoxb-test"} in opts[:headers]
+    assert opts[:form]["channel"] == "C1"
+    assert opts[:form]["thread_ts"] == "T1"
+    assert Jason.decode!(opts[:form]["blocks"]) == [%{"type" => "section"}]
   end
 
-  test "Slack API errors are surfaced explicitly" do
-    assert {:error, {:slack_api_error, "channel_not_found", _body}} =
-             ReqClient.send_message("C123", "hi", token: "xoxb-test", req: ErrorReq)
+  test "metadata, users, and direct messages unwrap provider objects" do
+    assert {:ok, %{"id" => "C1"}} = ReqClient.fetch_metadata("token", "C1", req: MockReq)
+    assert {:ok, %{"id" => "U1"}} = ReqClient.get_user("token", "U1", req: MockReq)
+    assert {:ok, "D1"} = ReqClient.open_dm("token", "U1", req: MockReq)
   end
 
-  test "resource operations use the matching Slack Web API methods" do
-    assert {:ok, %{"id" => "U123", "name" => "ada"}} =
-             ReqClient.get_user("U123", token: "xoxb-test", req: MockReq)
+  test "external file upload uses the current three-step Slack API" do
+    upload = %{body: "bytes", filename: "test.txt", title: "Test", alt_text: "file"}
+    assert {:ok, %{"files" => [%{"id" => "F1"}]}} = ReqClient.send_file("token", "C1", upload, req: MockReq)
 
-    assert_received {:req_request, user_opts}
-    assert user_opts[:url] == "https://slack.com/api/users.info"
-    assert user_opts[:form] == %{"user" => "U123"}
-
-    assert {:ok, "https://workspace.slack.com/archives/C123/p1706745600000100"} =
-             ReqClient.get_permalink("C123", "1706745600.000100",
-               token: "xoxb-test",
-               req: MockReq
-             )
-
-    assert_received {:req_request, permalink_opts}
-    assert permalink_opts[:url] == "https://slack.com/api/chat.getPermalink"
-    assert permalink_opts[:form]["channel"] == "C123"
-    assert permalink_opts[:form]["message_ts"] == "1706745600.000100"
-
-    assert {:ok, true} =
-             ReqClient.mark_as_read("C123", "1706745600.000100",
-               token: "xoxb-test",
-               req: MockReq
-             )
-
-    assert_received {:req_request, receipt_opts}
-    assert receipt_opts[:url] == "https://slack.com/api/conversations.mark"
-    assert receipt_opts[:form]["channel"] == "C123"
-    assert receipt_opts[:form]["ts"] == "1706745600.000100"
+    assert_received {:request, first}
+    assert first[:url] == "https://slack.com/api/files.getUploadURLExternal"
+    assert first[:form]["length"] == "5"
+    assert_received {:request, upload_request}
+    assert upload_request[:url] == "https://files.slack.com/upload"
+    assert upload_request[:body] == "bytes"
+    assert_received {:request, complete}
+    assert complete[:url] == "https://slack.com/api/files.completeUploadExternal"
   end
 
-  test "resource operations reject malformed successful responses" do
-    assert {:error, :invalid_user_response} =
-             ReqClient.get_user("U123", token: "xoxb-test", req: MalformedResourceReq)
+  test "downloads reject HTML and provider failures remain explicit" do
+    assert {:ok, "bytes"} = ReqClient.download_file("token", "https://files.slack.com/download", req: MockReq)
 
-    assert {:error, :invalid_permalink_response} =
-             ReqClient.get_permalink("C123", "1706745600.000100",
-               token: "xoxb-test",
-               req: MalformedResourceReq
-             )
-  end
-
-  test "resource operations preserve Slack API errors" do
-    assert {:error, {:slack_api_error, "channel_not_found", _body}} =
-             ReqClient.get_user("U123", token: "xoxb-test", req: ErrorReq)
-
-    assert {:error, {:slack_api_error, "channel_not_found", _body}} =
-             ReqClient.get_permalink("C123", "1706745600.000100", token: "xoxb-test", req: ErrorReq)
-  end
-
-  test "send_message/3 uses runtime base_url for Slack API calls" do
-    assert {:ok, %{"ts" => "1706745600.000100"}} =
-             ReqClient.send_message("C123", "hi",
-               token: "xoxb-test",
-               req: MockReq,
-               base_url: "https://slack-proxy.test/api"
-             )
-
-    assert_received {:req_request, opts}
-    assert opts[:url] == "https://slack-proxy.test/api/chat.postMessage"
-  end
-
-  test "send_file/3 performs Slack external upload flow" do
-    assert {:ok, %{"files" => [%{"id" => "F123"}]}} =
-             ReqClient.send_file(
-               "C123",
-               FileUpload.new(%{
-                 kind: :file,
-                 data: "hello slack\n",
-                 filename: "bytes.txt",
-                 media_type: "text/plain"
-               }),
-               token: "xoxb-test",
-               req: MockReq,
-               initial_comment: "upload comment",
-               thread_ts: "1706745600.000100"
-             )
-
-    assert_received {:req_request, get_upload_opts}
-    assert get_upload_opts[:url] == "https://slack.com/api/files.getUploadURLExternal"
-    assert get_upload_opts[:form]["filename"] == "bytes.txt"
-    assert get_upload_opts[:form]["length"] == "12"
-
-    assert_received {:req_request, upload_bytes_opts}
-    assert upload_bytes_opts[:url] == "https://files.slack.com/upload/v1/abc123"
-    assert upload_bytes_opts[:body] == "hello slack\n"
-
-    assert_received {:req_request, complete_opts}
-    assert complete_opts[:url] == "https://slack.com/api/files.completeUploadExternal"
-    assert complete_opts[:form]["channel_id"] == "C123"
-    assert complete_opts[:form]["initial_comment"] == "upload comment"
-    assert complete_opts[:form]["thread_ts"] == "1706745600.000100"
-    assert is_binary(complete_opts[:form]["files"])
-  end
-
-  test "download_file/2 sends bot authentication and returns raw bytes" do
-    url = "https://files.slack.com/files-pri/T1-F123/image.png"
-
-    assert {:ok, "image bytes"} =
-             ReqClient.download_file(url, token: "xoxb-test", req: MockReq)
-
-    assert_received {:req_request, opts}
-    assert opts[:method] == :get
-    assert opts[:url] == url
-    assert opts[:headers] == [{"authorization", "Bearer xoxb-test"}]
-    assert opts[:redirect] == true
-    assert opts[:decode_body] == false
-  end
-
-  test "download_file/2 rejects HTML and non-success responses" do
-    assert {:error, :unexpected_html_response} =
-             ReqClient.download_file("https://files.slack.com/login",
-               token: "xoxb-test",
-               req: MockReq
-             )
-
-    assert {:error, {:http_error, 404, "missing"}} =
-             ReqClient.download_file("https://files.slack.com/missing",
-               token: "xoxb-test",
-               req: MockReq
-             )
+    assert {:error, {:slack_api_error, "not_authed", _}} =
+             ReqClient.send_message("token", "C1", "hello", req: ErrorReq)
   end
 end

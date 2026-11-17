@@ -1,97 +1,25 @@
 defmodule Jido.Chat.Slack.Transport do
-  @moduledoc """
-  Transport contract for Slack Web API operations.
-  """
+  @moduledoc "Transport contract for Slack Web API operations."
 
-  @type api_result :: {:ok, map() | boolean()} | {:error, term()}
+  @type token :: String.t()
+  @type id :: String.t()
+  @type api_result :: {:ok, map() | boolean() | String.t()} | {:error, term()}
 
-  @callback send_message(
-              channel_id :: String.t() | integer(),
-              text :: String.t(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback send_file(
-              channel_id :: String.t() | integer(),
-              upload :: Jido.Chat.FileUpload.t(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback edit_message(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              text :: String.t(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback delete_message(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback fetch_metadata(channel_id :: String.t() | integer(), opts :: keyword()) ::
-              api_result()
-
-  @callback fetch_thread(channel_id :: String.t() | integer(), opts :: keyword()) ::
-              api_result()
-
-  @callback fetch_message(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback get_user(user_id :: String.t() | integer(), opts :: keyword()) :: api_result()
-
-  @callback get_permalink(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              opts :: keyword()
-            ) :: {:ok, String.t()} | {:error, term()}
-
-  @callback mark_as_read(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback download_file(url :: String.t(), opts :: keyword()) ::
-              {:ok, binary()} | {:error, term()}
-
-  @callback fetch_messages(channel_id :: String.t() | integer(), opts :: keyword()) ::
-              api_result()
-
-  @callback fetch_channel_messages(channel_id :: String.t() | integer(), opts :: keyword()) ::
-              api_result()
-
-  @callback list_threads(channel_id :: String.t() | integer(), opts :: keyword()) ::
-              api_result()
-
-  @callback add_reaction(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              emoji :: String.t(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback remove_reaction(
-              channel_id :: String.t() | integer(),
-              message_id :: String.t() | integer(),
-              emoji :: String.t(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback post_ephemeral(
-              channel_id :: String.t() | integer(),
-              user_id :: String.t() | integer(),
-              text :: String.t(),
-              opts :: keyword()
-            ) :: api_result()
-
-  @callback open_dm(user_id :: String.t() | integer(), opts :: keyword()) ::
-              {:ok, String.t() | integer()} | {:error, term()}
-
-  @callback open_modal(trigger_id :: String.t(), payload :: map(), opts :: keyword()) ::
-              api_result()
+  @callback send_message(token(), id(), String.t(), keyword()) :: api_result()
+  @callback send_file(token(), id(), map(), keyword()) :: api_result()
+  @callback edit_message(token(), id(), id(), String.t(), keyword()) :: api_result()
+  @callback delete_message(token(), id(), id(), keyword()) :: api_result()
+  @callback fetch_metadata(token(), id(), keyword()) :: api_result()
+  @callback fetch_thread(token(), id(), id(), keyword()) :: api_result()
+  @callback fetch_message(token(), id(), id(), keyword()) :: api_result()
+  @callback get_user(token(), id(), keyword()) :: api_result()
+  @callback mark_as_read(token(), id(), id(), keyword()) :: api_result()
+  @callback download_file(token(), String.t(), keyword()) :: {:ok, binary()} | {:error, term()}
+  @callback fetch_messages(token(), id(), keyword()) :: api_result()
+  @callback list_threads(token(), id(), keyword()) :: api_result()
+  @callback add_reaction(token(), id(), id(), String.t(), keyword()) :: api_result()
+  @callback remove_reaction(token(), id(), id(), String.t(), keyword()) :: api_result()
+  @callback post_ephemeral(token(), id(), id(), String.t(), keyword()) :: api_result()
+  @callback open_dm(token(), id(), keyword()) :: api_result()
+  @callback open_modal(token(), String.t(), map(), keyword()) :: api_result()
 end
