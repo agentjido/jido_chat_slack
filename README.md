@@ -1,5 +1,10 @@
 # Jido Chat Slack
 
+> [!IMPORTANT]
+> **The standalone Slack adapter is planned for deprecation.** The adapter is included in the [Jido Chat v3 source](https://github.com/agentjido/jido_chat/tree/release/v3).
+>
+> Check the Slack setup and supported operations in Jido Chat before changing dependencies.
+
 `jido_chat_slack` is the Slack adapter for Jido Chat V3.
 
 ## V3 local integration
