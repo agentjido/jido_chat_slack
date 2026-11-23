@@ -9,8 +9,7 @@
 
 ## V3 local integration
 
-This worktree uses the sibling `../jido_chat` package. Select a released Hex
-constraint only during later release work.
+Mix fetches the pinned Jido Chat V3 source during `mix deps.get`.
 
 The adapter is stateless. A `Jido.Chat.Client` holds private credentials and
 transport settings. Client construction starts no process and makes no request.
